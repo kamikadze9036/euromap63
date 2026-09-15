@@ -25,6 +25,10 @@ Promenne prostredi (viz docker-compose.yml):
   FTP_ROOT           — cesta ke sdilenemu FTP korenu (/ftpdata)
   POLL_INTERVAL_SEC  — jak casto kontrolovat REPORTS.DAT
   ROTATE_SIZE_MB     — velikost, pri ktere se REPORTS.DAT rotuje
+  CYCLADES_DB_HOST/USER/PASSWORD — pripojeni na tovarni Cyclades MES
+  CYCLADES_MAC_REFMAC — oznaceni stroje v Cyclades (napr. P2700-01),
+                        pro dohledani aktivni zakazky (OF) ke kazdemu
+                        cyklu. Prazdne/chybejici = order_ref se neplni.
 """
 import glob
 import json
@@ -34,6 +38,11 @@ import time
 from datetime import datetime, timezone
 
 import psycopg2
+
+try:
+    import pymssql
+except ImportError:
+    pymssql = None
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +56,14 @@ FTP_ROOT = os.environ.get("FTP_ROOT", "/ftpdata")
 POLL_INTERVAL_SEC = float(os.environ.get("POLL_INTERVAL_SEC", "3"))
 ROTATE_SIZE_MB = float(os.environ.get("ROTATE_SIZE_MB", "50"))
 TEMPLATES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+
+CYCLADES_DB_HOST = os.environ.get("CYCLADES_DB_HOST", "")
+CYCLADES_DB_USER = os.environ.get("CYCLADES_DB_USER", "")
+CYCLADES_DB_PASSWORD = os.environ.get("CYCLADES_DB_PASSWORD", "")
+CYCLADES_MAC_REFMAC = os.environ.get("CYCLADES_MAC_REFMAC", "")
+CYCLADES_CACHE_TTL_SEC = 5
+
+_cyclades_cache = {"order_ref": None, "checked_at": 0.0}
 
 REPORTS_DAT = os.path.join(FTP_ROOT, "REPORTS.DAT")
 REPORTS_LOG = os.path.join(FTP_ROOT, "REPORTS.LOG")
@@ -156,6 +173,46 @@ def split_csv_line(line):
     return fields
 
 
+def get_active_order():
+    """Vrati OF_REFOF (cislo zakazky) aktualne bezici na CYCLADES_MAC_REFMAC,
+    nebo None. Vysledek se cachuje na CYCLADES_CACHE_TTL_SEC, aby se sdilena
+    tovarni MES databaze nedotazovala pri kazdem pollu REPORTS.DAT. Pri chybe
+    spojeni vraci posledni znamou hodnotu misto shozeni cele smycky.
+    """
+    if not (pymssql and CYCLADES_DB_HOST and CYCLADES_MAC_REFMAC):
+        return None
+
+    now = time.time()
+    if now - _cyclades_cache["checked_at"] < CYCLADES_CACHE_TTL_SEC:
+        return _cyclades_cache["order_ref"]
+
+    try:
+        conn = pymssql.connect(
+            server=CYCLADES_DB_HOST,
+            user=CYCLADES_DB_USER,
+            password=CYCLADES_DB_PASSWORD,
+            database="SUIVPRO",
+            timeout=5,
+            login_timeout=5,
+        )
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT TOP 1 OF_REFOF FROM [OF] WHERE MAC_REFMAC=%s "
+                "AND OF_DATEFINOF IS NULL ORDER BY OF_DATELANCER DESC",
+                (CYCLADES_MAC_REFMAC,),
+            )
+            row = cur.fetchone()
+            _cyclades_cache["order_ref"] = row[0] if row else None
+        finally:
+            conn.close()
+    except Exception:
+        log.warning("Cyclades dotaz na aktivni OF selhal, pouzivam posledni znamou hodnotu (%r).", _cyclades_cache["order_ref"])
+
+    _cyclades_cache["checked_at"] = now
+    return _cyclades_cache["order_ref"]
+
+
 def is_data_line(line):
     """True if a REPORTS.DAT line starts with a number (a data row),
     as opposed to a parameter name (a header line or its continuation).
@@ -204,6 +261,7 @@ def read_new_cycles(conn):
         return 0
 
     new_lines = data_lines[last_count:]
+    order_ref = get_active_order()
     inserted = 0
     with conn.cursor() as cur:
         for line in new_lines:
@@ -228,10 +286,10 @@ def read_new_cycles(conn):
             # reseni je atomicka transakce + reports_lines_read nize.
             cur.execute(
                 """
-                INSERT INTO cycles (machine_code, cycle_count, cycle_time_s, params)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO cycles (machine_code, cycle_count, cycle_time_s, order_ref, params)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (MACHINE_CODE, cycle_count, cycle_time, json.dumps(row)),
+                (MACHINE_CODE, cycle_count, cycle_time, order_ref, json.dumps(row)),
             )
             inserted += 1
 

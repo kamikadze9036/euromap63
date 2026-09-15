@@ -72,6 +72,14 @@ services:
       FTP_ROOT: /ftpdata
       POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-3}
       ROTATE_SIZE_MB: ${ROTATE_SIZE_MB:-50}
+      # CYCLADES_MAC_REFMAC urcuje, ktery stroj v Cyclades odpovida
+      # nasemu MACHINE_CODE (pro dohledani aktivni zakazky/OF ke kazdemu
+      # cyklu). CYCLADES_DB_* prichazi z env_file nize - prazdne/chybejici
+      # soubor jen vypne toto obohaceni, sber dat funguje dal beze zmeny.
+      CYCLADES_MAC_REFMAC: ${CYCLADES_MAC_REFMAC:-}
+    env_file:
+      - path: ../cyclades-db.env
+        required: false
     volumes:
       - ftpdata:/ftpdata
 

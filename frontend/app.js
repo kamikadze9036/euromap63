@@ -10,6 +10,7 @@
   var elCycleTime = document.getElementById("val-cycletime");
   var elAvg = document.getElementById("val-avg");
   var elUpdated = document.getElementById("val-updated");
+  var elOrder = document.getElementById("val-order");
   var paramsTbody = document.querySelector("#paramsTable tbody");
   var chartTitleEl = document.getElementById("chart-title");
   var chartLimitInput = document.getElementById("chart-limit-input");
@@ -170,6 +171,7 @@
         elCycles.textContent = row.cycle_count;
         elCycleTime.textContent = fmt(row.cycle_time_s) + " s";
         elUpdated.textContent = new Date(row.time).toLocaleTimeString("cs-CZ");
+        elOrder.textContent = row.order_ref || "–";
         renderParams(row.params || {});
       })
       .catch(function (err) {

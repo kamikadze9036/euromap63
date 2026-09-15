@@ -56,7 +56,7 @@ def list_parameters(machine: str):
 def latest_cycle(machine: str):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT time, cycle_count, cycle_time_s, params FROM cycles "
+            "SELECT time, cycle_count, cycle_time_s, order_ref, params FROM cycles "
             "WHERE machine_code=%s ORDER BY cycle_count DESC LIMIT 1",
             (machine,),
         )
@@ -70,12 +70,36 @@ def latest_cycle(machine: str):
 def list_cycles(machine: str, limit: int = Query(200, le=2000)):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT time, cycle_count, cycle_time_s, params FROM cycles "
+            "SELECT time, cycle_count, cycle_time_s, order_ref, params FROM cycles "
             "WHERE machine_code=%s ORDER BY cycle_count DESC LIMIT %s",
             (machine, limit),
         )
         rows = cur.fetchall()
     rows.reverse()
+    return rows
+
+
+@app.get("/api/cycles/by-order")
+def cycles_by_order(order_ref: str, machine: str = None, limit: int = Query(5000, le=50000)):
+    """Dohledatelnost pri reklamaci: vsechny cyklove parametry patrici
+    ke konkretnimu cislu zakazky (OF) - napric jednim nebo vsemi stroji.
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        if machine:
+            cur.execute(
+                "SELECT time, machine_code, cycle_count, cycle_time_s, order_ref, params FROM cycles "
+                "WHERE order_ref=%s AND machine_code=%s ORDER BY cycle_count LIMIT %s",
+                (order_ref, machine, limit),
+            )
+        else:
+            cur.execute(
+                "SELECT time, machine_code, cycle_count, cycle_time_s, order_ref, params FROM cycles "
+                "WHERE order_ref=%s ORDER BY machine_code, cycle_count LIMIT %s",
+                (order_ref, limit),
+            )
+        rows = cur.fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="Zadna data pro tuto zakazku.")
     return rows
 
 
