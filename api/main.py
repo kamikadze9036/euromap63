@@ -9,6 +9,20 @@ import os
 import time
 from datetime import datetime, date
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+CYCLADES_TZ = ZoneInfo("Europe/Prague")
+
+
+def _cyclades_local(dt):
+    """pymssql vraci naivni datetime v mistnim case Cyclades serveru
+    (Europe/Prague). Naseho cycles.time je TIMESTAMPTZ (UTC) - bez
+    pripojeni spravne timezone by porovnani bylo posunute o 1-2 hodiny
+    (CET/CEST) a okno by nenaslo zadne cykly.
+    """
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=CYCLADES_TZ)
 
 import psycopg2
 import psycopg2.extras
@@ -226,6 +240,8 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
     if not machine_code:
         raise HTTPException(status_code=404, detail="Stroj z Cyclades neni namapovan na zadny nas machine_code.")
 
+    declared_at = _cyclades_local(decl["BILPSEQU_DATESAISIE"])
+
     prev_label = str(int(label) - 1)
     prev_rows = _query_suivpro(
         "SELECT TOP 1 BILPSEQU_DATESAISIE FROM BILAN_SAISIE_EQUIPE "
@@ -233,13 +249,13 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
         (prev_label, decl["BILPSEQU_REFMAC"]),
     )
     if prev_rows:
-        start_time = prev_rows[0]["BILPSEQU_DATESAISIE"]
+        start_time = _cyclades_local(prev_rows[0]["BILPSEQU_DATESAISIE"])
     else:
         of_rows = _query_suivpro(
             "SELECT OF_DATELANCER FROM [OF] WHERE OF_REFOF=%s AND MAC_REFMAC=%s",
             (decl["OF_REFOF"], decl["BILPSEQU_REFMAC"]),
         )
-        start_time = of_rows[0]["OF_DATELANCER"] if of_rows else None
+        start_time = _cyclades_local(of_rows[0]["OF_DATELANCER"]) if of_rows else None
 
     with get_conn() as conn, conn.cursor() as cur:
         if start_time:
@@ -247,14 +263,14 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
                 "SELECT time, machine_code, cycle_count, cycle_time_s, order_ref, params FROM cycles "
                 "WHERE machine_code=%s AND time > %s AND time <= %s "
                 "ORDER BY cycle_count LIMIT %s",
-                (machine_code, start_time, decl["BILPSEQU_DATESAISIE"], limit),
+                (machine_code, start_time, declared_at, limit),
             )
         else:
             cur.execute(
                 "SELECT time, machine_code, cycle_count, cycle_time_s, order_ref, params FROM cycles "
                 "WHERE machine_code=%s AND time <= %s "
                 "ORDER BY cycle_count DESC LIMIT %s",
-                (machine_code, decl["BILPSEQU_DATESAISIE"], limit),
+                (machine_code, declared_at, limit),
             )
         cycles = cur.fetchall()
         if not start_time:
@@ -266,7 +282,7 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
         "machine_code": machine_code,
         "carton_ref": decl["BILPSEQU_REFCARTON"],
         "declared_qty": decl["BILPSEQU_QTEBONNESAISIE"],
-        "declared_at": decl["BILPSEQU_DATESAISIE"],
+        "declared_at": declared_at,
         "operator_code": decl["BILPSEQU_CODEOP"],
         "window_start": start_time,
         "cycles_found": len(cycles),
