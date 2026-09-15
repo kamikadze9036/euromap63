@@ -80,6 +80,8 @@
           '<div class="machine-card__metric"><span class="mc-label">Doba cyklu</span><span class="mc-value" data-field="cycle_time_s">' + fmt(latest.cycle_time_s) + ' s</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Zakázka</span><span class="mc-value">' + escapeHtml(m.order_ref || "–") + '</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Forma</span><span class="mc-value">' + escapeHtml(m.tool_ref || "–") + '</span></div>' +
+          '<div class="machine-card__metric"><span class="mc-label">Poslední štítek</span><span class="mc-value">' + escapeHtml(m.last_label || "–") + '</span></div>' +
+          '<div class="machine-card__metric"><span class="mc-label">Další štítek</span><span class="mc-value">' + escapeHtml(m.next_label || "–") + '</span></div>' +
           stopRow +
         '</div>';
       gridEl.appendChild(a);

@@ -16,6 +16,8 @@
   var elAvg = document.getElementById("val-avg");
   var elUpdated = document.getElementById("val-updated");
   var elOrder = document.getElementById("val-order");
+  var elLastLabel = document.getElementById("val-last-label");
+  var elNextLabel = document.getElementById("val-next-label");
   var paramsTbody = document.querySelector("#paramsTable tbody");
   var chartTitleEl = document.getElementById("chart-title");
   var chartLimitInput = document.getElementById("chart-limit-input");
@@ -329,6 +331,18 @@
       .catch(function () {});
   }
 
+  function pollLabels() {
+    if (!elLastLabel || !elNextLabel) return;
+    fetchJson("/api/machines/status")
+      .then(function (machines) {
+        var m = machines.find(function (x) { return x.machine_code === MACHINE; });
+        if (!m) return;
+        elLastLabel.textContent = m.last_label || "–";
+        elNextLabel.textContent = m.next_label || "–";
+      })
+      .catch(function () {});
+  }
+
   function pollChart() {
     fetchJson("/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&limit=" + chartLimit)
       .then(function (rows) {
@@ -375,6 +389,8 @@
   loadMachineInfo();
   loadParamDefs().then(loadInitial);
   pollStats();
+  pollLabels();
   connectWs();
   setInterval(pollStats, 5000);
+  setInterval(pollLabels, 5000);
 })();

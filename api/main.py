@@ -187,7 +187,7 @@ def cycles_by_label(label: int, machine: str = None, limit: int = Query(5000, le
     }
 
 
-def _query_suivpro(sql, params):
+def _query_cyclades(database, sql, params):
     if not (pymssql and CYCLADES_DB_HOST):
         raise HTTPException(status_code=503, detail="Pripojeni na Cyclades neni nakonfigurovano.")
     try:
@@ -195,7 +195,7 @@ def _query_suivpro(sql, params):
             server=CYCLADES_DB_HOST,
             user=CYCLADES_DB_USER,
             password=CYCLADES_DB_PASSWORD,
-            database="SUIVPRO",
+            database=database,
             timeout=5,
             login_timeout=5,
         )
@@ -226,7 +226,8 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
     dutina/produkt ma svou radu, proto nelze brat jen "posledni deklaraci
     na stroji"). Vrati presne cykly z nasi DB spadajici do tohoto okna.
     """
-    rows = _query_suivpro(
+    rows = _query_cyclades(
+        "SUIVPRO",
         "SELECT BILPSEQU_DATESAISIE, BILPSEQU_REFCARTON, BILPSEQU_QTEBONNESAISIE, "
         "BILPSEQU_CODEOP, OF_REFOF, BILPSEQU_REFMAC "
         "FROM BILAN_SAISIE_EQUIPE WHERE BILPSEQU_REFETIQUETTE=%s",
@@ -243,7 +244,8 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
     declared_at = _cyclades_local(decl["BILPSEQU_DATESAISIE"])
 
     prev_label = str(int(label) - 1)
-    prev_rows = _query_suivpro(
+    prev_rows = _query_cyclades(
+        "SUIVPRO",
         "SELECT TOP 1 BILPSEQU_DATESAISIE FROM BILAN_SAISIE_EQUIPE "
         "WHERE BILPSEQU_REFETIQUETTE=%s AND BILPSEQU_REFMAC=%s",
         (prev_label, decl["BILPSEQU_REFMAC"]),
@@ -251,7 +253,8 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
     if prev_rows:
         start_time = _cyclades_local(prev_rows[0]["BILPSEQU_DATESAISIE"])
     else:
-        of_rows = _query_suivpro(
+        of_rows = _query_cyclades(
+            "SUIVPRO",
             "SELECT OF_DATELANCER FROM [OF] WHERE OF_REFOF=%s AND MAC_REFMAC=%s",
             (decl["OF_REFOF"], decl["BILPSEQU_REFMAC"]),
         )
@@ -291,6 +294,57 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
 
 
 _status_cache = {}  # machine_code -> {"data": {...}, "ts": float}
+_label_cache = {}  # machine_code -> {"data": {...}, "ts": float}
+
+
+def _query_label_progress(mac_refmac):
+    """Posledni deklarovany stitek (BILAN_SAISIE_EQUIPE, skutecne dokoncena
+    a naskenovana krabice) a dalsi stitek v poradi ve STEJNE cislene rade
+    (ETQGPAO.ETQ_ENCOURS pro rozsah obsahujici posledni stitek). Stitky bezi
+    ve vice paralelnich radach pod jednou zakazkou (vicedutinova forma) -
+    ETQ_ENCOURS je autoritativni "dalsi na rade" hodnota, kterou Cyclades
+    uz sam ukazuje operatorovi, takze se nepocita jako last+1 (stroj muze
+    mit stitky predtistene o par kusu dopredu).
+    """
+    if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
+        return {"last_label": None, "next_label": None}
+
+    last_rows = _query_cyclades(
+        "SUIVPRO",
+        "SELECT TOP 1 BILPSEQU_REFETIQUETTE, OF_REFOF FROM BILAN_SAISIE_EQUIPE "
+        "WHERE BILPSEQU_REFMAC=%s ORDER BY BILPSEQU_DATESAISIE DESC",
+        (mac_refmac,),
+    )
+    if not last_rows:
+        return {"last_label": None, "next_label": None}
+
+    last_label = last_rows[0]["BILPSEQU_REFETIQUETTE"]
+    of_refof = last_rows[0]["OF_REFOF"]
+
+    next_label = None
+    try:
+        range_rows = _query_cyclades(
+            "GPAO_PVL_SAP",
+            "SELECT TOP 1 ETQ_ENCOURS FROM ETQGPAO "
+            "WHERE OF_REFOF=%s AND %s BETWEEN ETQ_DEBUT AND ETQ_FIN",
+            (of_refof, last_label),
+        )
+        if range_rows:
+            next_label = range_rows[0]["ETQ_ENCOURS"]
+    except HTTPException:
+        pass
+
+    return {"last_label": last_label, "next_label": next_label}
+
+
+def get_label_progress(machine_code, mac_refmac):
+    now = time.time()
+    cached = _label_cache.get(machine_code)
+    if cached and now - cached["ts"] < STATUS_CACHE_TTL_SEC:
+        return cached["data"]
+    data = _query_label_progress(mac_refmac)
+    _label_cache[machine_code] = {"data": data, "ts": now}
+    return data
 
 
 def _query_cyclades_machine_status(mac_refmac):
@@ -366,6 +420,7 @@ def machines_status():
     result = []
     for m in machines:
         status = get_machine_status(m["machine_code"], m["cyclades_mac_refmac"])
+        labels = get_label_progress(m["machine_code"], m["cyclades_mac_refmac"])
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT time, cycle_count, cycle_time_s FROM cycles "
@@ -378,6 +433,7 @@ def machines_status():
             "machine_name": m["machine_name"],
             "cyclades_mac_refmac": m["cyclades_mac_refmac"],
             **status,
+            **labels,
             "latest_cycle": latest,
         })
     return result
