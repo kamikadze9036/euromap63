@@ -1,0 +1,106 @@
+# ════════════════════════════════════════════════════════════
+#  Euromap63 Platform — Docker Compose
+#
+#  Sbira cyklova data ze vstrikovaciho lisu (Krauss Maffei MC5)
+#  pres protokol EUROMAP 63/SPI (stroj = FTP klient).
+#
+#  Sluzby:
+#    ftp        — FTP server (pure-ftpd), kam se stroj pripojuje.
+#                 network_mode: host kvuli PASV (zadny NAT problem).
+#    postgres   — TimescaleDB, trvale uloziste cyklovych dat.
+#    collector  — sleduje FTP slozku (sdileny volume), zapisuje nova
+#                 data do DB a stara se o JOB/REQ soubory pro stroj.
+#    api        — FastAPI backend, poskytuje data frontendu.
+#    frontend   — nginx + staticky dashboard.
+#
+#  Spusteni:
+#    1. cp .env.example .env a vyplnit VM_PUBLIC_IP / hesla
+#    2. docker compose up -d --build
+#    3. Otevrit http://<VM_IP>:8092  (frontend)
+#
+#  Na strani stroje (Euromap63/SPI obrazovka):
+#    - Adresa TCP/IP (cil FTP) = VM_PUBLIC_IP z .env
+#    - Prihlaseni = FTP_USER / FTP_PASSWORD z .env
+#    - Session/station ID pole necha prazdne (hleda .REQ v korenu)
+# ════════════════════════════════════════════════════════════
+
+services:
+
+  ftp:
+    image: stilliard/pure-ftpd:hardened
+    container_name: euromap63_ftp
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PUBLICHOST: ${VM_PUBLIC_IP:?Nastav VM_PUBLIC_IP v .env}
+      FTP_USER_NAME: ${FTP_USER:-euromap}
+      FTP_USER_PASS: ${FTP_PASSWORD:?Nastav FTP_PASSWORD v .env}
+      FTP_USER_HOME: /home/ftpusers/euromap
+      ADDED_FLAGS: "--passiveportrange ${FTP_PASV_MIN:-30000}:${FTP_PASV_MAX:-30009} --maxclientsperip=10"
+    volumes:
+      - ftpdata:/home/ftpusers/euromap
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: euromap63_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-euromap63}
+      POSTGRES_USER: ${POSTGRES_USER:-euromap63}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Nastav POSTGRES_PASSWORD v .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${POSTGRES_EXPOSE_PORT:-5435}:5432"   # volitelne - pro pripojeni DBeaver/psql zvenci
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-euromap63} -d ${POSTGRES_DB:-euromap63}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  collector:
+    build: ./collector
+    container_name: euromap63_collector
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-euromap63}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-euromap63}
+      MACHINE_CODE: ${MACHINE_CODE:-KM-MC5-01}
+      FTP_ROOT: /ftpdata
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-3}
+      ROTATE_SIZE_MB: ${ROTATE_SIZE_MB:-50}
+    volumes:
+      - ftpdata:/ftpdata
+
+  api:
+    build: ./api
+    container_name: euromap63_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-euromap63}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-euromap63}
+    ports:
+      - "${API_EXPOSE_PORT:-8091}:8000"
+
+  frontend:
+    build: ./frontend
+    container_name: euromap63_frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # URL, na kterou se prohlizec uzivatele bude dotazovat - musi byt
+      # dosazitelna z jeho pocitace, ne jen uvnitr Docker site.
+      API_BASE_URL: ${FRONTEND_API_BASE_URL:-http://localhost:8091}
+      MACHINE_CODE: ${MACHINE_CODE:-KM-MC5-01}
+    ports:
+      - "${FRONTEND_EXPOSE_PORT:-8092}:80"
+
+volumes:
+  pgdata:
+  ftpdata:
