@@ -19,6 +19,8 @@
   var elLastLabel = document.getElementById("val-last-label");
   var elNextLabel = document.getElementById("val-next-label");
   var paramsTbody = document.querySelector("#paramsTable tbody");
+  var paramFilterInput = document.getElementById("paramFilter");
+  var paramFilterText = "";
   var chartTitleEl = document.getElementById("chart-title");
   var chartLimitInput = document.getElementById("chart-limit-input");
   var chartResetBtn = document.getElementById("chart-reset-zoom");
@@ -286,6 +288,25 @@
       paramsTbody.appendChild(tr);
     });
     highlightSelectedRow();
+    applyParamFilter();
+  }
+
+  function applyParamFilter() {
+    var needle = paramFilterText.trim().toLowerCase();
+    Array.prototype.forEach.call(paramsTbody.rows, function (tr) {
+      if (!needle) { tr.hidden = false; return; }
+      var key = tr.dataset.param || "";
+      var label = tr.children[1] ? tr.children[1].textContent : "";
+      var hay = (key + " " + label).toLowerCase();
+      tr.hidden = hay.indexOf(needle) === -1;
+    });
+  }
+
+  if (paramFilterInput) {
+    paramFilterInput.addEventListener("input", function () {
+      paramFilterText = paramFilterInput.value;
+      applyParamFilter();
+    });
   }
 
   function fetchJson(path) {

@@ -104,6 +104,25 @@ main {
 
 canvas { max-width: 100%; height: auto; }
 
+.params-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.params-header h2 { margin: 0; }
+.param-filter {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.9rem;
+  min-width: 200px;
+}
+
 table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
 th, td {
   text-align: left;
