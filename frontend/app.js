@@ -4,7 +4,6 @@
   var cfg = window.EUROMAP63_CONFIG || {};
   var API_BASE = cfg.apiBaseUrl || "http://localhost:8091";
   var MACHINE = cfg.machineCode || "KM-MC5-01";
-  var CHART_LIMIT = 100;
 
   var statusEl = document.getElementById("status");
   var elCycles = document.getElementById("val-cycles");
@@ -12,9 +11,19 @@
   var elAvg = document.getElementById("val-avg");
   var elUpdated = document.getElementById("val-updated");
   var paramsTbody = document.querySelector("#paramsTable tbody");
-  var paramDefs = {};
+  var chartTitleEl = document.getElementById("chart-title");
+  var chartLimitInput = document.getElementById("chart-limit-input");
   var canvas = document.getElementById("cycleChart");
   var ctx = canvas.getContext("2d");
+
+  var paramDefs = {};
+  var lastCycles = [];
+  var chartLimit = parseInt(chartLimitInput.value, 10) || 100;
+
+  // Vychozi zobrazeny parametr v grafu - doba cyklu (stejna data jako
+  // cycle_time_s, ale pristupuje se k ni pres params jako ke kterekoliv
+  // jine hodnote, aby byl vyber jednotny).
+  var selected = { key: "ActTimCyc", label: "Doba cyklu", unit: "s" };
 
   function setStatus(kind, text) {
     statusEl.className = "status status--" + kind;
@@ -26,13 +35,47 @@
     return Number(n).toFixed(digits === undefined ? 2 : digits);
   }
 
+  function paramLabel(key) {
+    var def = paramDefs[key];
+    return def && def.label ? def.label : key;
+  }
+
+  function paramUnit(key) {
+    var def = paramDefs[key];
+    return def && def.unit && def.unit !== "-" ? def.unit : "";
+  }
+
+  function getValue(row, key) {
+    if (!row.params || !(key in row.params)) return null;
+    var v = parseFloat(row.params[key]);
+    return Number.isNaN(v) ? null : v;
+  }
+
+  function updateChartTitle() {
+    var unitSuffix = selected.unit ? " (" + selected.unit + ")" : "";
+    chartTitleEl.textContent = selected.label + unitSuffix;
+  }
+
+  function selectParam(key) {
+    selected = { key: key, label: paramLabel(key), unit: paramUnit(key) };
+    updateChartTitle();
+    highlightSelectedRow();
+    drawChart(lastCycles);
+  }
+
+  function highlightSelectedRow() {
+    Array.prototype.forEach.call(paramsTbody.rows, function (tr) {
+      tr.classList.toggle("row--selected", tr.dataset.param === selected.key);
+    });
+  }
+
   function drawChart(rows) {
     var w = canvas.width, h = canvas.height, pad = 30;
     ctx.clearRect(0, 0, w, h);
 
     var values = rows
-      .map(function (r) { return r.cycle_time_s; })
-      .filter(function (v) { return v !== null && v !== undefined; });
+      .map(function (r) { return getValue(r, selected.key); })
+      .filter(function (v) { return v !== null; });
     if (values.length < 2) return;
 
     var min = Math.min.apply(null, values);
@@ -56,7 +99,7 @@
       ctx.lineTo(w - pad, y);
       ctx.stroke();
       var val = max - (max - min) * (g / gridLines);
-      ctx.fillText(val.toFixed(1) + "s", 2, y + 3);
+      ctx.fillText(val.toFixed(2), 2, y + 3);
     }
 
     ctx.strokeStyle = lineColor;
@@ -77,6 +120,7 @@
         rows.forEach(function (r) {
           paramDefs[r.param_name] = { label: r.param_label, unit: r.param_unit };
         });
+        updateChartTitle();
       })
       .catch(function () {});
   }
@@ -86,6 +130,9 @@
     Object.keys(params).forEach(function (key) {
       var def = paramDefs[key] || {};
       var tr = document.createElement("tr");
+      tr.dataset.param = key;
+      tr.title = "Zobrazit historii v grafu";
+      tr.addEventListener("click", function () { selectParam(key); });
 
       var tdKey = document.createElement("td");
       tdKey.textContent = key;
@@ -106,6 +153,7 @@
       tr.appendChild(tdUnit);
       paramsTbody.appendChild(tr);
     });
+    highlightSelectedRow();
   }
 
   function fetchJson(path) {
@@ -136,11 +184,24 @@
   }
 
   function pollChart() {
-    fetchJson("/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&limit=" + CHART_LIMIT)
-      .then(drawChart)
+    fetchJson("/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&limit=" + chartLimit)
+      .then(function (rows) {
+        lastCycles = rows;
+        drawChart(rows);
+      })
       .catch(function () {});
   }
 
+  chartLimitInput.addEventListener("change", function () {
+    var v = parseInt(chartLimitInput.value, 10);
+    if (!v || v < 10) v = 10;
+    if (v > 2000) v = 2000;
+    chartLimitInput.value = v;
+    chartLimit = v;
+    pollChart();
+  });
+
+  updateChartTitle();
   loadParamDefs().then(pollLatest);
   pollChart();
   setInterval(pollLatest, 3000);
