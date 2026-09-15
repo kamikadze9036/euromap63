@@ -64,4 +64,8 @@ SetTmpBrlZn[1,12]
 @080CycGraviWeightNet2\PDESpecial0.PDESpecialBase
 @080CycGraviWeightNet3\PDESpecial0.PDESpecialBase
 @080CycGraviWeightNet4\PDESpecial0.PDESpecialBase
+ActTmpOil
+ActPrsXfrSpec[1]
+ActPrsHldSpecMax[1]
+ActPrsMachSpecMax
 ;
