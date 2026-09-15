@@ -9,7 +9,16 @@ import psycopg2.extras
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
+try:
+    import pymssql
+except ImportError:
+    pymssql = None
+
 DATABASE_URL = os.environ["DATABASE_URL"]
+
+CYCLADES_DB_HOST = os.environ.get("CYCLADES_DB_HOST", "")
+CYCLADES_DB_USER = os.environ.get("CYCLADES_DB_USER", "")
+CYCLADES_DB_PASSWORD = os.environ.get("CYCLADES_DB_PASSWORD", "")
 
 app = FastAPI(title="Euromap63 API")
 app.add_middleware(
@@ -101,6 +110,56 @@ def cycles_by_order(order_ref: str, machine: str = None, limit: int = Query(5000
     if not rows:
         raise HTTPException(status_code=404, detail="Zadna data pro tuto zakazku.")
     return rows
+
+
+def order_ref_for_label(label: int):
+    """Dohleda cislo zakazky (OF_REFOF) v Cyclades podle cisla stitku -
+    stitky se tisknou v rozsazich (ETQ_DEBUT..ETQ_FIN) patrici jedne
+    zakazce, viz GPAO_PVL_SAP.dbo.ETQGPAO (stejna tabulka jako report
+    Rpt_EtqSAP_Liste_etq v Cyclades).
+    """
+    if not (pymssql and CYCLADES_DB_HOST):
+        raise HTTPException(status_code=503, detail="Pripojeni na Cyclades neni nakonfigurovano.")
+    try:
+        conn = pymssql.connect(
+            server=CYCLADES_DB_HOST,
+            user=CYCLADES_DB_USER,
+            password=CYCLADES_DB_PASSWORD,
+            database="GPAO_PVL_SAP",
+            timeout=5,
+            login_timeout=5,
+        )
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT TOP 1 OF_REFOF FROM ETQGPAO "
+                "WHERE %s BETWEEN ETQ_DEBUT AND ETQ_FIN "
+                "ORDER BY ETQ_DEBUT DESC",
+                (label,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except pymssql.Error:
+        raise HTTPException(status_code=502, detail="Dotaz na Cyclades selhal.")
+
+
+@app.get("/api/cycles/by-label")
+def cycles_by_label(label: int, machine: str = None, limit: int = Query(5000, le=50000)):
+    """Dohledatelnost pri reklamaci podle cisla etikety: najde zakazku
+    (OF) patrici tomuto stitku v Cycladech, pak vrati vsechny cyklove
+    parametry ulozene pod timto order_ref (stejny mechanismus jako
+    /api/cycles/by-order).
+    """
+    order_ref = order_ref_for_label(label)
+    if not order_ref:
+        raise HTTPException(status_code=404, detail="Stitek nenalezen v zadne zakazce.")
+    return {
+        "label": label,
+        "order_ref": order_ref,
+        "cycles": cycles_by_order(order_ref, machine, limit),
+    }
 
 
 @app.get("/api/stats")

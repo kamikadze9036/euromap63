@@ -92,6 +92,9 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-euromap63}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-euromap63}
+    env_file:
+      - path: ../cyclades-db.env
+        required: false
     ports:
       - "${API_EXPOSE_PORT:-8091}:8000"
 
