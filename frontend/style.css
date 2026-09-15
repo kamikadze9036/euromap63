@@ -95,6 +95,20 @@ th, td {
 th { color: var(--muted); font-weight: 600; }
 td.num { font-variant-numeric: tabular-nums; text-align: right; }
 
+.params-table-wrap {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.params-table-wrap table { border: none; }
+.params-table-wrap thead th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  box-shadow: 0 1px 0 var(--border);
+}
+
 #paramsTable tbody tr { cursor: pointer; }
 #paramsTable tbody tr:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 #paramsTable tbody tr.row--selected {
