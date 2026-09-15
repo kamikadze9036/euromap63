@@ -13,4 +13,17 @@ ActStrCsh[1]
 ActTimXfr[1]
 ActStrXfr[1]
 ActStrPlst[1]
+ActTmpBrlZn[1,3]
+ActTmpBrlZn[1,5]
+@080Inj1MatResT1\CycDataTmpZone\CycVal.PdeValue
+@080Inj1MatResT2\CycDataTmpZone\CycVal.PdeValue
+@080Inj1MatResT3\CycDataTmpZone\CycVal.PdeValue
+@080Inj1MatResT7\CycDataTmpZone\CycVal.PdeValue
+@080Inj1MatResT10\CycDataTmpZone\CycVal.PdeValue
+@080CycGraviWeightNet1\CycVal.PdeValue
+@080CycGraviWeightNet2\CycVal.PdeValue
+@080CycGraviFeedFactor2\CycVal.PdeValue
+@010CycDataMld\CycCfbTim\CycVal.PdeValue
+@010CycDataMld\CycClpOpnTim\CycVal.PdeValue
+@010CycDataOth\CycBreakTim\CycVal.PdeValue
 ;
