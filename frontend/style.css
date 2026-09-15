@@ -206,8 +206,10 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   gap: 8px;
 }
 .machine-card__metric { display: flex; flex-direction: column; }
+.machine-card__metric--wide { grid-column: 1 / -1; }
 .mc-label { font-size: 0.72rem; color: var(--muted); }
 .mc-value { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.mc-value--reason { font-size: 0.95rem; color: var(--warn); font-variant-numeric: normal; }
 
 .nav-link {
   color: var(--accent);

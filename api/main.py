@@ -180,9 +180,9 @@ def _query_cyclades_machine_status(mac_refmac):
     """Zjisti, jestli stroj bezi/stoji podle SUIVPRO.dbo.[OF] (base tabulka,
     ne view - live rolling okno otevrenych zakazek). Zivy stav "jede forma":
     radek s OF_DATEFINOF IS NULL = zakazka jeste bezi na stroji.
-    OF_CAUSEARRETCOURANT = -2 a OF_DUREARRETCOURANT = 0 -> stroj aktualne jede,
-    jinak stoji (duvod/kod prostoje neni dale rozlisovan na poruchu/serizovani -
-    to by vyzadovalo mapovani pres TYPES_ARRETS, zatim neoverene).
+    OF_CAUSEARRETCOURANT = -2 a OF_DUREARRETCOURANT = 0 -> stroj aktualne jede
+    (-2 neni v TYPES_ARRETS - je to sentinel "bez prostoje", ne skutecny duvod).
+    Jinak stoji - duvod se dohleda v TYPES_ARRETS (ARR_REFARRET -> ARR_LIBARRET).
     """
     if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
         return {"state": "neznamo", "order_ref": None, "tool_ref": None}
@@ -198,9 +198,12 @@ def _query_cyclades_machine_status(mac_refmac):
         try:
             cur = conn.cursor(as_dict=True)
             cur.execute(
-                "SELECT TOP 1 OF_REFOF, OUT_REFOUT, OF_CAUSEARRETCOURANT, OF_DUREARRETCOURANT "
-                "FROM [OF] WHERE MAC_REFMAC=%s AND OF_DATEFINOF IS NULL "
-                "ORDER BY OF_DATELANCER DESC",
+                "SELECT TOP 1 o.OF_REFOF, o.OUT_REFOUT, o.OF_CAUSEARRETCOURANT, "
+                "o.OF_DUREARRETCOURANT, t.ARR_LIBARRET "
+                "FROM [OF] o "
+                "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = o.OF_CAUSEARRETCOURANT "
+                "WHERE o.MAC_REFMAC=%s AND o.OF_DATEFINOF IS NULL "
+                "ORDER BY o.OF_DATELANCER DESC",
                 (mac_refmac,),
             )
             row = cur.fetchone()
@@ -219,6 +222,7 @@ def _query_cyclades_machine_status(mac_refmac):
         "order_ref": row["OF_REFOF"],
         "tool_ref": row["OUT_REFOUT"],
         "stop_cause": row["OF_CAUSEARRETCOURANT"],
+        "stop_reason": None if running else row["ARR_LIBARRET"],
         "stop_duration_s": row["OF_DUREARRETCOURANT"],
     }
 

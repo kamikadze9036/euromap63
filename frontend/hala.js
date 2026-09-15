@@ -27,6 +27,19 @@
     return Number(n).toFixed(digits === undefined ? 2 : digits);
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function fmtDuration(sec) {
+    if (!sec || sec <= 0) return "–";
+    var m = Math.floor(sec / 60);
+    var s = Math.round(sec % 60);
+    return m > 0 ? (m + " min " + s + " s") : (s + " s");
+  }
+
   function fetchJson(path) {
     return fetch(API_BASE + path).then(function (res) {
       if (!res.ok) throw new Error("HTTP " + res.status);
@@ -51,16 +64,23 @@
       a.id = cardId(m.machine_code);
 
       var latest = m.latest_cycle || {};
+      var stopRow = "";
+      if (m.state === "stoji") {
+        stopRow =
+          '<div class="machine-card__metric machine-card__metric--wide"><span class="mc-label">Důvod prostoje</span><span class="mc-value mc-value--reason">' +
+          escapeHtml(m.stop_reason || "neurčeno") + ' (' + fmtDuration(m.stop_duration_s) + ')</span></div>';
+      }
       a.innerHTML =
         '<div class="machine-card__head">' +
-          '<span class="machine-card__name">' + (m.machine_name || m.machine_code) + '</span>' +
+          '<span class="machine-card__name">' + escapeHtml(m.machine_name || m.machine_code) + '</span>' +
           '<span class="machine-card__state">' + (STATE_LABELS[m.state] || m.state || "–") + '</span>' +
         '</div>' +
         '<div class="machine-card__body">' +
           '<div class="machine-card__metric"><span class="mc-label">Cyklus</span><span class="mc-value" data-field="cycle_count">' + (latest.cycle_count || "–") + '</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Doba cyklu</span><span class="mc-value" data-field="cycle_time_s">' + fmt(latest.cycle_time_s) + ' s</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Zakázka</span><span class="mc-value">' + (m.order_ref || "–") + '</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Forma</span><span class="mc-value">' + (m.tool_ref || "–") + '</span></div>' +
+          '<div class="machine-card__metric"><span class="mc-label">Zakázka</span><span class="mc-value">' + escapeHtml(m.order_ref || "–") + '</span></div>' +
+          '<div class="machine-card__metric"><span class="mc-label">Forma</span><span class="mc-value">' + escapeHtml(m.tool_ref || "–") + '</span></div>' +
+          stopRow +
         '</div>';
       gridEl.appendChild(a);
     });
