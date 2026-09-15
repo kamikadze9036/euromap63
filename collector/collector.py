@@ -130,6 +130,32 @@ def arm_reports_job(conn):
     log.info("REPORTS.JOB vyzbrojen (ABORT + EXECUTE odeslany, ceka se na zpracovani strojem).")
 
 
+def split_csv_line(line):
+    """Split a REPORTS.DAT CSV line on commas, except commas inside [...].
+
+    Some EUROMAP parameter names use multi-index array syntax like
+    "ActTmpBrlZn[1,3]" - a plain str.split(",") breaks that single field
+    into two, desyncing the header from every data row.
+    """
+    fields = []
+    depth = 0
+    current = []
+    for ch in line:
+        if ch == "[":
+            depth += 1
+            current.append(ch)
+        elif ch == "]":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(ch)
+    fields.append("".join(current))
+    return fields
+
+
 def read_new_cycles(conn):
     if not os.path.exists(REPORTS_DAT):
         return 0
@@ -147,7 +173,7 @@ def read_new_cycles(conn):
     if not lines:
         return 0
 
-    header = lines[0].split(",")
+    header = split_csv_line(lines[0])
     data_lines = lines[1:]
     if len(data_lines) <= last_count:
         return 0
@@ -156,7 +182,7 @@ def read_new_cycles(conn):
     inserted = 0
     with conn.cursor() as cur:
         for line in new_lines:
-            values = line.split(",")
+            values = split_csv_line(line)
             if len(values) != len(header):
                 log.warning("Preskakuji poskozeny radek REPORTS.DAT: %r", line)
                 continue
