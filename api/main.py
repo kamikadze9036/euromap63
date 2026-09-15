@@ -1,12 +1,18 @@
 """
 Euromap63 API — FastAPI backend nad TimescaleDB, poskytuje cyklova data
-a zakladni statistiky pro dashboard.
+a zakladni statistiky pro dashboard, plus WebSocket push novych cyklu
+a stav stroje (bezi/stoji) z Cyclades MES.
 """
+import asyncio
+import logging
 import os
+import time
+from datetime import datetime, date
+from decimal import Decimal
 
 import psycopg2
 import psycopg2.extras
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 try:
@@ -14,11 +20,16 @@ try:
 except ImportError:
     pymssql = None
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+log = logging.getLogger("euromap63-api")
+
 DATABASE_URL = os.environ["DATABASE_URL"]
 
 CYCLADES_DB_HOST = os.environ.get("CYCLADES_DB_HOST", "")
 CYCLADES_DB_USER = os.environ.get("CYCLADES_DB_USER", "")
 CYCLADES_DB_PASSWORD = os.environ.get("CYCLADES_DB_PASSWORD", "")
+STATUS_CACHE_TTL_SEC = 5
+CYCLE_POLL_INTERVAL_SEC = 1.5
 
 app = FastAPI(title="Euromap63 API")
 app.add_middleware(
@@ -44,7 +55,7 @@ def health():
 def list_machines():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT machine_code, machine_name, active, created_at "
+            "SELECT machine_code, machine_name, cyclades_mac_refmac, active, created_at "
             "FROM machines ORDER BY machine_code"
         )
         return cur.fetchall()
@@ -160,6 +171,180 @@ def cycles_by_label(label: int, machine: str = None, limit: int = Query(5000, le
         "order_ref": order_ref,
         "cycles": cycles_by_order(order_ref, machine, limit),
     }
+
+
+_status_cache = {}  # machine_code -> {"data": {...}, "ts": float}
+
+
+def _query_cyclades_machine_status(mac_refmac):
+    """Zjisti, jestli stroj bezi/stoji podle SUIVPRO.dbo.[OF] (base tabulka,
+    ne view - live rolling okno otevrenych zakazek). Zivy stav "jede forma":
+    radek s OF_DATEFINOF IS NULL = zakazka jeste bezi na stroji.
+    OF_CAUSEARRETCOURANT = -2 a OF_DUREARRETCOURANT = 0 -> stroj aktualne jede,
+    jinak stoji (duvod/kod prostoje neni dale rozlisovan na poruchu/serizovani -
+    to by vyzadovalo mapovani pres TYPES_ARRETS, zatim neoverene).
+    """
+    if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
+        return {"state": "neznamo", "order_ref": None, "tool_ref": None}
+    try:
+        conn = pymssql.connect(
+            server=CYCLADES_DB_HOST,
+            user=CYCLADES_DB_USER,
+            password=CYCLADES_DB_PASSWORD,
+            database="SUIVPRO",
+            timeout=5,
+            login_timeout=5,
+        )
+        try:
+            cur = conn.cursor(as_dict=True)
+            cur.execute(
+                "SELECT TOP 1 OF_REFOF, OUT_REFOUT, OF_CAUSEARRETCOURANT, OF_DUREARRETCOURANT "
+                "FROM [OF] WHERE MAC_REFMAC=%s AND OF_DATEFINOF IS NULL "
+                "ORDER BY OF_DATELANCER DESC",
+                (mac_refmac,),
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    except pymssql.Error:
+        log.warning("Cyclades dotaz na stav stroje %s selhal.", mac_refmac)
+        return {"state": "neznamo", "order_ref": None, "tool_ref": None}
+
+    if not row:
+        return {"state": "bez_zakazky", "order_ref": None, "tool_ref": None}
+
+    running = row["OF_CAUSEARRETCOURANT"] == -2 and (row["OF_DUREARRETCOURANT"] or 0) == 0
+    return {
+        "state": "bezi" if running else "stoji",
+        "order_ref": row["OF_REFOF"],
+        "tool_ref": row["OUT_REFOUT"],
+        "stop_cause": row["OF_CAUSEARRETCOURANT"],
+        "stop_duration_s": row["OF_DUREARRETCOURANT"],
+    }
+
+
+def get_machine_status(machine_code, mac_refmac):
+    now = time.time()
+    cached = _status_cache.get(machine_code)
+    if cached and now - cached["ts"] < STATUS_CACHE_TTL_SEC:
+        return cached["data"]
+    data = _query_cyclades_machine_status(mac_refmac)
+    _status_cache[machine_code] = {"data": data, "ts": now}
+    return data
+
+
+@app.get("/api/machines/status")
+def machines_status():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT machine_code, machine_name, cyclades_mac_refmac FROM machines "
+            "WHERE active ORDER BY machine_code"
+        )
+        machines = cur.fetchall()
+
+    result = []
+    for m in machines:
+        status = get_machine_status(m["machine_code"], m["cyclades_mac_refmac"])
+        with get_conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT time, cycle_count, cycle_time_s FROM cycles "
+                "WHERE machine_code=%s ORDER BY cycle_count DESC LIMIT 1",
+                (m["machine_code"],),
+            )
+            latest = cur.fetchone()
+        result.append({
+            "machine_code": m["machine_code"],
+            "machine_name": m["machine_name"],
+            **status,
+            "latest_cycle": latest,
+        })
+    return result
+
+
+# ────────────────────────────────────────────────────────────
+#  WebSocket - push novych cyklu bez HTTP pollingu z prohlizece.
+#  Jeden API proces = jednoduchy in-memory pub/sub staci (zadny Redis
+#  navic). Pozadi bezici uloha sleduje DB kazdych CYCLE_POLL_INTERVAL_SEC
+#  a posle novy cyklus jen kdyz je aspon jeden posluchac daneho stroje.
+# ────────────────────────────────────────────────────────────
+
+class ConnectionManager:
+    def __init__(self):
+        self.active = {}  # machine_code -> set[WebSocket]
+
+    async def connect(self, machine, ws):
+        await ws.accept()
+        self.active.setdefault(machine, set()).add(ws)
+
+    def disconnect(self, machine, ws):
+        self.active.get(machine, set()).discard(ws)
+
+    def has_listeners(self, machine):
+        return bool(self.active.get(machine))
+
+    async def broadcast(self, machine, message):
+        dead = []
+        for ws in self.active.get(machine, set()):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.active[machine].discard(ws)
+
+
+manager = ConnectionManager()
+_last_broadcast_cycle = {}
+
+
+def _jsonable(row):
+    out = {}
+    for k, v in row.items():
+        if isinstance(v, (datetime, date)):
+            out[k] = v.isoformat()
+        elif isinstance(v, Decimal):
+            out[k] = float(v)
+        else:
+            out[k] = v
+    return out
+
+
+@app.websocket("/ws/cycles")
+async def ws_cycles(websocket: WebSocket, machine: str):
+    await manager.connect(machine, websocket)
+    try:
+        while True:
+            # klient nic neposila, jen drzime spojeni otevrene
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(machine, websocket)
+
+
+async def _poll_and_broadcast_loop():
+    while True:
+        try:
+            machines = list(manager.active.keys())
+            for machine in machines:
+                if not manager.has_listeners(machine):
+                    continue
+                with get_conn() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT time, cycle_count, cycle_time_s, order_ref, params FROM cycles "
+                        "WHERE machine_code=%s ORDER BY cycle_count DESC LIMIT 1",
+                        (machine,),
+                    )
+                    latest = cur.fetchone()
+                if latest and _last_broadcast_cycle.get(machine) != latest["cycle_count"]:
+                    _last_broadcast_cycle[machine] = latest["cycle_count"]
+                    await manager.broadcast(machine, {"type": "cycle", "data": _jsonable(latest)})
+        except Exception:
+            log.exception("Chyba v poll_and_broadcast smycce.")
+        await asyncio.sleep(CYCLE_POLL_INTERVAL_SEC)
+
+
+@app.on_event("startup")
+async def on_startup():
+    asyncio.create_task(_poll_and_broadcast_loop())
 
 
 @app.get("/api/stats")

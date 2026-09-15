@@ -3,9 +3,13 @@
 
   var cfg = window.EUROMAP63_CONFIG || {};
   var API_BASE = cfg.apiBaseUrl || "http://localhost:8091";
-  var MACHINE = cfg.machineCode || "KM-MC5-01";
+  var WS_BASE = API_BASE.replace(/^http/, "ws");
+
+  var urlParams = new URLSearchParams(window.location.search);
+  var MACHINE = urlParams.get("code") || cfg.machineCode || "KM-MC5-01";
 
   var statusEl = document.getElementById("status");
+  var pageTitleEl = document.getElementById("page-title");
   var elCycles = document.getElementById("val-cycles");
   var elCycleTime = document.getElementById("val-cycletime");
   var elAvg = document.getElementById("val-avg");
@@ -20,6 +24,9 @@
   var paramDefs = {};
   var lastCycles = [];
   var chartLimit = parseInt(chartLimitInput.value, 10) || 100;
+  var ws = null;
+
+  if (pageTitleEl) pageTitleEl.textContent = "Euromap63 — " + MACHINE;
 
   // Vychozi zobrazeny parametr v grafu - doba cyklu (stejna data jako
   // cycle_time_s, ale pristupuje se k ni pres params jako ke kterekoliv
@@ -164,20 +171,35 @@
     });
   }
 
-  function pollLatest() {
+  function applyCycle(row) {
+    elCycles.textContent = row.cycle_count;
+    elCycleTime.textContent = fmt(row.cycle_time_s) + " s";
+    elUpdated.textContent = new Date(row.time).toLocaleTimeString("cs-CZ");
+    elOrder.textContent = row.order_ref || "–";
+    renderParams(row.params || {});
+
+    lastCycles.push(row);
+    if (lastCycles.length > chartLimit) {
+      lastCycles.splice(0, lastCycles.length - chartLimit);
+    }
+    drawChart(lastCycles);
+  }
+
+  function loadInitial() {
     fetchJson("/api/cycles/latest?machine=" + encodeURIComponent(MACHINE))
       .then(function (row) {
-        setStatus("ok", "Online");
+        renderParams(row.params || {});
         elCycles.textContent = row.cycle_count;
         elCycleTime.textContent = fmt(row.cycle_time_s) + " s";
         elUpdated.textContent = new Date(row.time).toLocaleTimeString("cs-CZ");
         elOrder.textContent = row.order_ref || "–";
-        renderParams(row.params || {});
       })
-      .catch(function (err) {
-        setStatus("err", "Chyba: " + err.message);
-      });
+      .catch(function () {});
 
+    pollChart();
+  }
+
+  function pollStats() {
     fetchJson("/api/stats?machine=" + encodeURIComponent(MACHINE) + "&window=100")
       .then(function (s) {
         elAvg.textContent = fmt(s.avg_cycle_time) + " s";
@@ -194,6 +216,22 @@
       .catch(function () {});
   }
 
+  function connectWs() {
+    ws = new WebSocket(WS_BASE + "/ws/cycles?machine=" + encodeURIComponent(MACHINE));
+    ws.onopen = function () { setStatus("ok", "Online (živě)"); };
+    ws.onmessage = function (evt) {
+      try {
+        var msg = JSON.parse(evt.data);
+        if (msg.type === "cycle") applyCycle(msg.data);
+      } catch (e) { /* ignore */ }
+    };
+    ws.onclose = function () {
+      setStatus("waiting", "Spojení přerušeno, obnovuji…");
+      setTimeout(connectWs, 3000);
+    };
+    ws.onerror = function () { ws.close(); };
+  }
+
   chartLimitInput.addEventListener("change", function () {
     var v = parseInt(chartLimitInput.value, 10);
     if (!v || v < 10) v = 10;
@@ -204,8 +242,8 @@
   });
 
   updateChartTitle();
-  loadParamDefs().then(pollLatest);
-  pollChart();
-  setInterval(pollLatest, 3000);
-  setInterval(pollChart, 10000);
+  loadParamDefs().then(loadInitial);
+  pollStats();
+  connectWs();
+  setInterval(pollStats, 5000);
 })();

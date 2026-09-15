@@ -28,20 +28,39 @@ stroj (EUROMAP63/SPI, FTP klient)
   stroj (`ABORT` → `EXECUTE REPORTS.JOB`), pak průběžně čte nové řádky z
   `REPORTS.DAT` do DB. Umí i rotaci `REPORTS.DAT`, když přeroste
   `ROTATE_SIZE_MB`.
-- **api** — FastAPI, `/api/machines`, `/api/cycles`, `/api/cycles/latest`,
-  `/api/stats`.
+- **api** — FastAPI. REST: `/api/machines`, `/api/machines/status` (stav
+  běží/stojí z Cyclades MES, cache 5 s), `/api/cycles`, `/api/cycles/latest`,
+  `/api/cycles/by-order`, `/api/cycles/by-label`, `/api/stats`. WebSocket:
+  `/ws/cycles?machine=...` — push nového cyklu ihned po vložení do DB (žádný
+  HTTP polling z prohlížeče). Jeden uvicorn worker (nutné kvůli in-memory
+  WebSocket pub/subu — nezvyšovat `--workers` bez přepsání na sdílený broker).
 - **frontend** — statický dashboard (žádné externí závislosti/CDN — funguje
-  i bez přístupu na internet), aktuální hodnoty + graf trendu doby cyklu.
+  i bez přístupu na internet), dvě stránky:
+  - `index.html` — "hala": grid karet všech aktivních strojů (stav, aktuální
+    cyklus/OF/forma), živé hodnoty přes WebSocket.
+  - `machine.html?code=KM-MC5-01` — detail stroje: karty, graf trendu
+    (klikatelný výběr libovolného parametru), tabulka všech parametrů.
+
+## Dohledatelnost (Cyclades MES integrace)
+
+- Ke každému cyklu se ukládá `order_ref` (aktuální OF z Cyclades `SUIVPRO.dbo.[OF]`).
+- `GET /api/cycles/by-order?order_ref=...` — všechny parametry pro danou zakázku.
+- `GET /api/cycles/by-label?label=205909005` — dohledá OF podle čísla štítku
+  (`GPAO_PVL_SAP.dbo.ETQGPAO`, rozsahy `ETQ_DEBUT..ETQ_FIN`), pak stejné jako výše.
+- Vyžaduje `~/cyclades-db.env` na `spc-vm` (o úroveň výš než tento projekt) a
+  `CYCLADES_MAC_REFMAC` v `.env` (např. `P2700-01`). Bez nich funguje sběr dat
+  dál, jen bez `order_ref`/stavu stroje.
 
 ## Spuštění
 
 ```
 cp .env.example .env
-# uprav VM_PUBLIC_IP, FTP_PASSWORD, POSTGRES_PASSWORD
+# uprav VM_PUBLIC_IP, FTP_PASSWORD, POSTGRES_PASSWORD, CYCLADES_MAC_REFMAC
 docker compose up -d --build
 ```
 
-Dashboard: `http://<VM_IP>:8092`
+Dashboard (hala): `http://<VM_IP>:8092`
+Detail stroje: `http://<VM_IP>:8092/machine.html?code=KM-MC5-01`
 API: `http://<VM_IP>:8091/api/health`
 
 ## Nastavení na straně stroje (Euromap63/SPI obrazovka)

@@ -3,50 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Euromap63 — KM MC5</title>
+<title>Euromap63 — Hala</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header>
-    <h1>Euromap63 — Krauss Maffei MC5</h1>
+    <h1>Euromap63 — přehled strojů</h1>
     <div id="status" class="status status--waiting">Připojuji…</div>
   </header>
 
   <main>
-    <section class="cards" id="cards">
-      <div class="card"><div class="card__label">Počet cyklů</div><div class="card__value" id="val-cycles">–</div></div>
-      <div class="card"><div class="card__label">Doba cyklu</div><div class="card__value" id="val-cycletime">–</div></div>
-      <div class="card"><div class="card__label">Průměr (posl. 100)</div><div class="card__value" id="val-avg">–</div></div>
-      <div class="card"><div class="card__label">Poslední aktualizace</div><div class="card__value" id="val-updated">–</div></div>
-      <div class="card"><div class="card__label">Zakázka (OF)</div><div class="card__value" id="val-order">–</div></div>
-    </section>
-
-    <section class="chart-section">
-      <div class="chart-header">
-        <h2 id="chart-title">Doba cyklu</h2>
-        <label class="chart-window">
-          Posledních
-          <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
-          cyklů
-        </label>
-      </div>
-      <canvas id="cycleChart" width="900" height="260"></canvas>
-    </section>
-
-    <section class="params">
-      <h2>Všechny parametry (poslední takt) — klikni na řádek pro zobrazení historie v grafu</h2>
-      <div class="params-table-wrap">
-        <table id="paramsTable">
-          <thead>
-            <tr><th>Parametr</th><th>Popis</th><th>Hodnota</th><th>Jednotka</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
+    <section class="machine-grid" id="machineGrid">
+      <p class="muted">Načítám seznam strojů…</p>
     </section>
   </main>
 
   <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="hala.js"></script>
 </body>
 </html>
