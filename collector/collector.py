@@ -156,6 +156,18 @@ def split_csv_line(line):
     return fields
 
 
+def is_data_line(line):
+    """True if a REPORTS.DAT line starts with a number (a data row),
+    as opposed to a parameter name (a header line or its continuation).
+    """
+    first_field = line.split(",", 1)[0].strip()
+    try:
+        float(first_field)
+        return True
+    except ValueError:
+        return False
+
+
 def read_new_cycles(conn):
     if not os.path.exists(REPORTS_DAT):
         return 0
@@ -173,8 +185,21 @@ def read_new_cycles(conn):
     if not lines:
         return 0
 
-    header = split_csv_line(lines[0])
-    data_lines = lines[1:]
+    # Stroj lame dlouhe radky (pozorovano u hlavicky nad ~1000 znaku) na
+    # vice fyzickych radku, pokracovani zacina mezerou. Slucujeme vsechny
+    # radky od zacatku, dokud nenarazime na prvni skutecny datovy radek
+    # (zacina cislem). Stejny limit by teoreticky mohl casem zasahnout i
+    # datovy radek (dalsi rozsireni PARAMETERS) - zatim nereseno, protoze
+    # data jsou kratsi nez hlavicka.
+    header_line_count = 0
+    header_parts = []
+    for i, line in enumerate(lines):
+        if i > 0 and is_data_line(line):
+            break
+        header_parts.append(line.lstrip() if i > 0 else line)
+        header_line_count += 1
+    header = split_csv_line("".join(header_parts))
+    data_lines = lines[header_line_count:]
     if len(data_lines) <= last_count:
         return 0
 
