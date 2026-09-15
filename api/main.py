@@ -41,6 +41,17 @@ def list_machines():
         return cur.fetchall()
 
 
+@app.get("/api/parameters")
+def list_parameters(machine: str):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT param_name, param_type, param_unit, param_label FROM machine_parameters "
+            "WHERE machine_code=%s ORDER BY param_name",
+            (machine,),
+        )
+        return cur.fetchall()
+
+
 @app.get("/api/cycles/latest")
 def latest_cycle(machine: str):
     with get_conn() as conn, conn.cursor() as cur:

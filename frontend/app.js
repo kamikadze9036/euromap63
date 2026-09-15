@@ -12,6 +12,7 @@
   var elAvg = document.getElementById("val-avg");
   var elUpdated = document.getElementById("val-updated");
   var paramsTbody = document.querySelector("#paramsTable tbody");
+  var paramDefs = {};
   var canvas = document.getElementById("cycleChart");
   var ctx = canvas.getContext("2d");
 
@@ -69,17 +70,40 @@
     ctx.stroke();
   }
 
+  function loadParamDefs() {
+    return fetchJson("/api/parameters?machine=" + encodeURIComponent(MACHINE))
+      .then(function (rows) {
+        paramDefs = {};
+        rows.forEach(function (r) {
+          paramDefs[r.param_name] = { label: r.param_label, unit: r.param_unit };
+        });
+      })
+      .catch(function () {});
+  }
+
   function renderParams(params) {
     paramsTbody.innerHTML = "";
     Object.keys(params).forEach(function (key) {
+      var def = paramDefs[key] || {};
       var tr = document.createElement("tr");
+
       var tdKey = document.createElement("td");
       tdKey.textContent = key;
+
+      var tdLabel = document.createElement("td");
+      tdLabel.textContent = def.label || "–";
+
       var tdVal = document.createElement("td");
       tdVal.className = "num";
       tdVal.textContent = params[key];
+
+      var tdUnit = document.createElement("td");
+      tdUnit.textContent = def.unit && def.unit !== "-" ? def.unit : "–";
+
       tr.appendChild(tdKey);
+      tr.appendChild(tdLabel);
       tr.appendChild(tdVal);
+      tr.appendChild(tdUnit);
       paramsTbody.appendChild(tr);
     });
   }
@@ -117,7 +141,7 @@
       .catch(function () {});
   }
 
-  pollLatest();
+  loadParamDefs().then(pollLatest);
   pollChart();
   setInterval(pollLatest, 3000);
   setInterval(pollChart, 10000);
