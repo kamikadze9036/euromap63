@@ -259,10 +259,82 @@ def machines_status():
         result.append({
             "machine_code": m["machine_code"],
             "machine_name": m["machine_name"],
+            "cyclades_mac_refmac": m["cyclades_mac_refmac"],
             **status,
             "latest_cycle": latest,
         })
     return result
+
+
+_machine_info_cache = {}  # mac_refmac -> {"data": {...}, "ts": float}
+MACHINE_INFO_CACHE_TTL_SEC = 300  # staticke udaje, staci obcas
+
+
+def _query_cyclades_machine_info(mac_refmac):
+    """Popisne udaje o stroji z Cyclades master dat (SUIVPRO.dbo.MACHINE) -
+    typ/tonaz, dilna, sekce. Na rozdil od stavu (bezi/stoji) se toto meni
+    jen vyjimecne, proto delsi cache.
+    """
+    if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
+        return None
+    try:
+        conn = pymssql.connect(
+            server=CYCLADES_DB_HOST,
+            user=CYCLADES_DB_USER,
+            password=CYCLADES_DB_PASSWORD,
+            database="SUIVPRO",
+            timeout=5,
+            login_timeout=5,
+        )
+        try:
+            cur = conn.cursor(as_dict=True)
+            cur.execute(
+                "SELECT m.MAC_REFMAC, m.MAC_LIBMAC, m.ATEL_REFATEL, m.SEC_REFSEC, "
+                "t.TYPESMAC_LIB0 AS type_label "
+                "FROM MACHINE m "
+                "LEFT JOIN TYPES_MACHINE t ON t.TYPESMAC_TYPE = m.MAC_TYPEMAC "
+                "WHERE m.MAC_REFMAC=%s",
+                (mac_refmac,),
+            )
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    except pymssql.Error:
+        log.warning("Cyclades dotaz na info o stroji %s selhal.", mac_refmac)
+        return None
+    return row
+
+
+def get_machine_info(mac_refmac):
+    now = time.time()
+    cached = _machine_info_cache.get(mac_refmac)
+    if cached and now - cached["ts"] < MACHINE_INFO_CACHE_TTL_SEC:
+        return cached["data"]
+    data = _query_cyclades_machine_info(mac_refmac)
+    _machine_info_cache[mac_refmac] = {"data": data, "ts": now}
+    return data
+
+
+@app.get("/api/machines/info")
+def machine_info(machine: str):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT machine_code, machine_name, cyclades_mac_refmac FROM machines WHERE machine_code=%s",
+            (machine,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Neznamy stroj.")
+    info = get_machine_info(row["cyclades_mac_refmac"]) if row["cyclades_mac_refmac"] else None
+    return {
+        "machine_code": row["machine_code"],
+        "machine_name": row["machine_name"],
+        "cyclades_mac_refmac": row["cyclades_mac_refmac"],
+        "cyclades_label": info["MAC_LIBMAC"] if info else None,
+        "type_label": info["type_label"] if info else None,
+        "atelier": info["ATEL_REFATEL"] if info else None,
+        "section": info["SEC_REFSEC"] if info else None,
+    }
 
 
 # ────────────────────────────────────────────────────────────

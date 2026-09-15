@@ -10,6 +10,7 @@
 
   var statusEl = document.getElementById("status");
   var pageTitleEl = document.getElementById("page-title");
+  var machineInfoEl = document.getElementById("machineInfo");
   var elCycles = document.getElementById("val-cycles");
   var elCycleTime = document.getElementById("val-cycletime");
   var elAvg = document.getElementById("val-avg");
@@ -36,6 +37,35 @@
   function setStatus(kind, text) {
     statusEl.className = "status status--" + kind;
     statusEl.textContent = text;
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function loadMachineInfo() {
+    fetchJson("/api/machines/info?machine=" + encodeURIComponent(MACHINE))
+      .then(function (info) {
+        var titleParts = [info.cyclades_mac_refmac || MACHINE];
+        if (info.cyclades_label) titleParts.push(info.cyclades_label);
+        if (pageTitleEl) pageTitleEl.textContent = "Euromap63 — " + titleParts.join(" — ");
+
+        if (!machineInfoEl) return;
+        var chips = [];
+        if (info.cyclades_label) chips.push(["Typ", info.cyclades_label]);
+        if (info.type_label) chips.push(["Kategorie", info.type_label]);
+        if (info.atelier) chips.push(["Dílna", info.atelier]);
+        if (info.section) chips.push(["Sekce", info.section]);
+        if (!chips.length) return;
+        machineInfoEl.hidden = false;
+        machineInfoEl.innerHTML = chips.map(function (c) {
+          return '<span class="info-chip"><span class="info-chip__label">' + escapeHtml(c[0]) +
+            '</span><span class="info-chip__value">' + escapeHtml(c[1]) + '</span></span>';
+        }).join("");
+      })
+      .catch(function () {});
   }
 
   function fmt(n, digits) {
@@ -242,6 +272,7 @@
   });
 
   updateChartTitle();
+  loadMachineInfo();
   loadParamDefs().then(loadInitial);
   pollStats();
   connectWs();

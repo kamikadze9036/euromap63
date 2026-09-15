@@ -72,7 +72,7 @@
       }
       a.innerHTML =
         '<div class="machine-card__head">' +
-          '<span class="machine-card__name">' + escapeHtml(m.machine_name || m.machine_code) + '</span>' +
+          '<span class="machine-card__name">' + escapeHtml(m.cyclades_mac_refmac || m.machine_name || m.machine_code) + '</span>' +
           '<span class="machine-card__state">' + (STATE_LABELS[m.state] || m.state || "–") + '</span>' +
         '</div>' +
         '<div class="machine-card__body">' +

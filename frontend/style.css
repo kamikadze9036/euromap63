@@ -62,6 +62,24 @@ main {
   margin: 0 auto;
 }
 
+.machine-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.info-chip {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 0.85rem;
+}
+.info-chip__label { color: var(--muted); }
+.info-chip__value { font-weight: 600; }
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
