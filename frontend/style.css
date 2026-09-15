@@ -160,6 +160,35 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   font-variant-numeric: tabular-nums;
 }
 
+.chart-header__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.chart-reset-btn {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.chart-reset-btn:hover { background: var(--border); }
+
+.chart-container { width: 100%; overflow: hidden; }
+.chart-container .uplot { width: 100% !important; }
+.chart-container .u-wrap { cursor: grab; }
+.chart-container .u-wrap:active { cursor: grabbing; }
+
+/* uPlot vykresluje vlastni popisky/legendu barvou z inherited "color" -
+   nastavime ji dle tematu, protoze knihovni CSS ma jen cerne/sede default. */
+.uplot { color: var(--text); }
+.u-legend { color: var(--text); font-size: 0.8rem; }
+.u-legend th { color: var(--muted); }
+.u-title { color: var(--text); }
+
 .header-title {
   display: flex;
   align-items: center;

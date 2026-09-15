@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Euromap63 — detail stroje</title>
+<link rel="stylesheet" href="vendor/uPlot.min.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -32,13 +33,16 @@
     <section class="chart-section">
       <div class="chart-header">
         <h2 id="chart-title">Doba cyklu</h2>
-        <label class="chart-window">
-          Posledních
-          <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
-          cyklů
-        </label>
+        <div class="chart-header__right">
+          <label class="chart-window">
+            Posledních
+            <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
+            cyklů
+          </label>
+          <button type="button" id="chart-reset-zoom" class="chart-reset-btn" title="Kolečko myši = zoom, tažení = posun, dvojklik = reset">Reset zoomu</button>
+        </div>
       </div>
-      <canvas id="cycleChart" width="900" height="260"></canvas>
+      <div id="cycleChartContainer" class="chart-container"></div>
     </section>
 
     <section class="params">
@@ -54,6 +58,7 @@
     </section>
   </main>
 
+  <script src="vendor/uPlot.min.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
 </body>

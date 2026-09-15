@@ -19,13 +19,14 @@
   var paramsTbody = document.querySelector("#paramsTable tbody");
   var chartTitleEl = document.getElementById("chart-title");
   var chartLimitInput = document.getElementById("chart-limit-input");
-  var canvas = document.getElementById("cycleChart");
-  var ctx = canvas.getContext("2d");
+  var chartResetBtn = document.getElementById("chart-reset-zoom");
+  var chartContainer = document.getElementById("cycleChartContainer");
 
   var paramDefs = {};
   var lastCycles = [];
   var chartLimit = parseInt(chartLimitInput.value, 10) || 100;
   var ws = null;
+  var chart = null;
 
   if (pageTitleEl) pageTitleEl.textContent = "Euromap63 — " + MACHINE;
 
@@ -98,7 +99,7 @@
     selected = { key: key, label: paramLabel(key), unit: paramUnit(key) };
     updateChartTitle();
     highlightSelectedRow();
-    drawChart(lastCycles);
+    initChart();
   }
 
   function highlightSelectedRow() {
@@ -107,48 +108,139 @@
     });
   }
 
-  function drawChart(rows) {
-    var w = canvas.width, h = canvas.height, pad = 30;
-    ctx.clearRect(0, 0, w, h);
+  // ── uPlot graf s zoomem (kolecko mysi) a panem (tazeni) ──────────────
+  // Standardni recept z uPlot demos (zoom-wheel.html), upraveno pro
+  // jedinou X osu s casem. Dvojklik resetuje zoom na plny rozsah dat.
+  function wheelZoomPlugin(factor) {
+    factor = factor || 0.75;
+    var xMin, xMax, xRange;
 
-    var values = rows
-      .map(function (r) { return getValue(r, selected.key); })
-      .filter(function (v) { return v !== null; });
-    if (values.length < 2) return;
-
-    var min = Math.min.apply(null, values);
-    var max = Math.max.apply(null, values);
-    if (min === max) { min -= 1; max += 1; }
-
-    var style = getComputedStyle(document.body);
-    var gridColor = style.getPropertyValue("--border").trim() || "#ddd";
-    var lineColor = style.getPropertyValue("--accent").trim() || "#2f6fed";
-    var textColor = style.getPropertyValue("--muted").trim() || "#666";
-
-    ctx.strokeStyle = gridColor;
-    ctx.fillStyle = textColor;
-    ctx.font = "11px sans-serif";
-    ctx.lineWidth = 1;
-    var gridLines = 4;
-    for (var g = 0; g <= gridLines; g++) {
-      var y = pad + (h - 2 * pad) * (g / gridLines);
-      ctx.beginPath();
-      ctx.moveTo(pad, y);
-      ctx.lineTo(w - pad, y);
-      ctx.stroke();
-      var val = max - (max - min) * (g / gridLines);
-      ctx.fillText(val.toFixed(2), 2, y + 3);
+    function clamp(nRange, nMin, nMax, fRange, fMin, fMax) {
+      if (nRange > fRange) { nMin = fMin; nMax = fMax; }
+      else if (nMin < fMin) { nMin = fMin; nMax = fMin + nRange; }
+      else if (nMax > fMax) { nMax = fMax; nMin = fMax - nRange; }
+      return [nMin, nMax];
     }
 
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    values.forEach(function (v, i) {
-      var x = pad + (w - 2 * pad) * (i / (values.length - 1));
-      var y = pad + (h - 2 * pad) * (1 - (v - min) / (max - min));
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    return {
+      hooks: {
+        ready: function (u) {
+          xMin = u.scales.x.min;
+          xMax = u.scales.x.max;
+          xRange = xMax - xMin;
+
+          var over = u.over;
+
+          over.addEventListener("dblclick", function () {
+            u.setScale("x", { min: xMin, max: xMax });
+          });
+
+          over.addEventListener("mousedown", function (e) {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            var rect = over.getBoundingClientRect();
+            var left0 = e.clientX;
+            var scXMin0 = u.scales.x.min;
+            var scXMax0 = u.scales.x.max;
+
+            function onmove(e2) {
+              e2.preventDefault();
+              var dx = e2.clientX - left0;
+              var dFactor = dx / rect.width;
+              var oxRange = scXMax0 - scXMin0;
+              var dx2 = oxRange * dFactor;
+              u.setScale("x", { min: scXMin0 - dx2, max: scXMax0 - dx2 });
+            }
+            function onup() {
+              document.removeEventListener("mousemove", onmove);
+              document.removeEventListener("mouseup", onup);
+            }
+            document.addEventListener("mousemove", onmove);
+            document.addEventListener("mouseup", onup);
+          });
+
+          over.addEventListener("wheel", function (e) {
+            e.preventDefault();
+            var rect = over.getBoundingClientRect();
+            var left = u.cursor.left;
+            if (left == null) return;
+            var leftPct = left / rect.width;
+            var xVal = u.posToVal(left, "x");
+            var oxRange = u.scales.x.max - u.scales.x.min;
+            var nxRange = e.deltaY < 0 ? oxRange * factor : oxRange / factor;
+            var nxMin = xVal - leftPct * nxRange;
+            var nxMax = nxMin + nxRange;
+            var clamped = clamp(nxRange, nxMin, nxMax, xRange, xMin, xMax);
+            u.setScale("x", { min: clamped[0], max: clamped[1] });
+          });
+        },
+      },
+    };
+  }
+
+  function themeColor(name, fallback) {
+    var v = getComputedStyle(document.body).getPropertyValue(name).trim();
+    return v || fallback;
+  }
+
+  function buildChartData(rows) {
+    var xs = [], ys = [];
+    rows.forEach(function (r) {
+      var v = getValue(r, selected.key);
+      if (v === null) return;
+      xs.push(new Date(r.time).getTime() / 1000);
+      ys.push(v);
     });
-    ctx.stroke();
+    return [xs, ys];
+  }
+
+  function initChart() {
+    var data = buildChartData(lastCycles);
+    var accent = themeColor("--accent", "#2f6fed");
+    var muted = themeColor("--muted", "#666");
+    var border = themeColor("--border", "#ddd");
+    var text = themeColor("--text", "#1b1f24");
+
+    var opts = {
+      width: chartContainer.clientWidth || 900,
+      height: 260,
+      plugins: [wheelZoomPlugin(0.75)],
+      cursor: { drag: { x: false, y: false } },
+      scales: { x: { time: true } },
+      series: [
+        {},
+        {
+          label: selected.label,
+          stroke: accent,
+          width: 2,
+          points: { show: data[0].length <= 150, size: 4, stroke: accent, fill: accent },
+        },
+      ],
+      axes: [
+        { stroke: muted, grid: { stroke: border, width: 1 }, ticks: { stroke: border } },
+        {
+          stroke: muted,
+          grid: { stroke: border, width: 1 },
+          ticks: { stroke: border },
+          label: selected.unit || "",
+          labelFont: "11px sans-serif",
+        },
+      ],
+      legend: { show: true },
+    };
+
+    if (chart) chart.destroy();
+    chartContainer.innerHTML = "";
+    chart = new uPlot(opts, data, chartContainer);
+
+    // uPlot generuje vlastni text barvou z CSS - u tmaveho rezimu je
+    // potreba nastavit barvu popisku/legendy explicitne.
+    chartContainer.style.color = text;
+  }
+
+  function updateChartData() {
+    if (!chart) { initChart(); return; }
+    chart.setData(buildChartData(lastCycles));
   }
 
   function loadParamDefs() {
@@ -212,7 +304,7 @@
     if (lastCycles.length > chartLimit) {
       lastCycles.splice(0, lastCycles.length - chartLimit);
     }
-    drawChart(lastCycles);
+    updateChartData();
   }
 
   function loadInitial() {
@@ -241,7 +333,7 @@
     fetchJson("/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&limit=" + chartLimit)
       .then(function (rows) {
         lastCycles = rows;
-        drawChart(rows);
+        initChart();
       })
       .catch(function () {});
   }
@@ -269,6 +361,14 @@
     chartLimitInput.value = v;
     chartLimit = v;
     pollChart();
+  });
+
+  chartResetBtn.addEventListener("click", function () {
+    initChart();
+  });
+
+  window.addEventListener("resize", function () {
+    if (chart) chart.setSize({ width: chartContainer.clientWidth || 900, height: 260 });
   });
 
   updateChartTitle();
