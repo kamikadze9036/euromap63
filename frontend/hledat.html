@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="cs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Euromap63 — Dohledatelnost</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="header-title">
+      <a href="index.html" class="back-link">&larr; Hala</a>
+      <h1>Dohledatelnost</h1>
+    </div>
+    <div id="status" class="status status--waiting">Připraveno</div>
+  </header>
+
+  <main>
+    <section class="search-box">
+      <form id="searchForm">
+        <div class="search-mode">
+          <label><input type="radio" name="mode" value="order" checked> Číslo zakázky (OF)</label>
+          <label><input type="radio" name="mode" value="label"> Číslo štítku</label>
+        </div>
+        <div class="search-row">
+          <input type="text" id="searchValue" placeholder="např. 0205909+912/4 nebo 205909005" autocomplete="off">
+          <button type="submit">Hledat</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="resultSummary" class="result-summary" hidden></section>
+
+    <section class="params" id="resultSection" hidden>
+      <h2>Nalezené cykly — klikni na řádek pro zobrazení všech parametrů</h2>
+      <div class="params-table-wrap">
+        <table id="resultTable">
+          <thead>
+            <tr><th>Čas</th><th>Stroj</th><th>Cyklus</th><th>Doba cyklu</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="params" id="detailSection" hidden>
+      <h2 id="detailTitle">Parametry cyklu</h2>
+      <div class="params-table-wrap">
+        <table id="detailTable">
+          <thead>
+            <tr><th>Parametr</th><th>Popis</th><th>Hodnota</th><th>Jednotka</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="hledat.js"></script>
+</body>
+</html>
