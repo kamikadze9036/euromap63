@@ -119,6 +119,8 @@
     if (mode === "order") {
       req = fetchJson("/api/cycles/by-order?order_ref=" + encodeURIComponent(value))
         .then(function (cycles) { return { order_ref: value, cycles: cycles }; });
+    } else if (mode === "package") {
+      req = fetchJson("/api/cycles/by-package?label=" + encodeURIComponent(value));
     } else {
       req = fetchJson("/api/cycles/by-label?label=" + encodeURIComponent(value));
     }
@@ -129,9 +131,18 @@
       var machines = Array.from(new Set(cycles.map(function (c) { return c.machine_code; })));
       var first = cycles[0], last = cycles[cycles.length - 1];
       var summary = "Zakázka " + result.order_ref + " — " + cycles.length + " cyklů";
-      if (result.label !== undefined) summary = "Štítek " + result.label + " → zakázka " + result.order_ref + " — " + cycles.length + " cyklů";
-      if (machines.length) summary += ", stroj(e): " + machines.join(", ");
-      if (first && last) {
+      if (mode === "label") summary = "Štítek " + result.label + " → zakázka " + result.order_ref + " — " + cycles.length + " cyklů";
+      if (mode === "package") {
+        summary = "Balení (karton " + (result.carton_ref != null ? result.carton_ref : "?") + ", štítek " + result.label + ") → zakázka " + result.order_ref +
+          " — nalezeno " + result.cycles_found + " cyklů, deklarováno " + fmt(result.declared_qty, 0) + " ks" +
+          (result.operator_code ? ", operátor " + result.operator_code : "") +
+          ", deklarace " + new Date(result.declared_at).toLocaleString("cs-CZ");
+        if (result.cycles_found !== Math.round(result.declared_qty)) {
+          summary += " ⚠ počet cyklů neodpovídá přesně deklarovanému množství (víc dutin/kavit na cyklus, nebo mezera bez předchozí deklarace)";
+        }
+      }
+      if (mode !== "package" && machines.length) summary += ", stroj(e): " + machines.join(", ");
+      if (mode !== "package" && first && last) {
         summary += ", " + new Date(first.time).toLocaleString("cs-CZ") + " – " + new Date(last.time).toLocaleString("cs-CZ");
       }
       showSummary(summary, "ok");

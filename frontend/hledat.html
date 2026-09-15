@@ -20,10 +20,11 @@
       <form id="searchForm">
         <div class="search-mode">
           <label><input type="radio" name="mode" value="order" checked> Číslo zakázky (OF)</label>
-          <label><input type="radio" name="mode" value="label"> Číslo štítku</label>
+          <label><input type="radio" name="mode" value="label"> Číslo štítku → celá zakázka</label>
+          <label><input type="radio" name="mode" value="package"> Číslo štítku → přesné balení (karton)</label>
         </div>
         <div class="search-row">
-          <input type="text" id="searchValue" placeholder="např. 0205909+912/4 nebo 205909005" autocomplete="off">
+          <input type="text" id="searchValue" placeholder="zakázka: 0205909+912/4  |  štítek: 205909005" autocomplete="off">
           <button type="submit">Hledat</button>
         </div>
       </form>

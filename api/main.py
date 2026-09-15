@@ -173,6 +173,107 @@ def cycles_by_label(label: int, machine: str = None, limit: int = Query(5000, le
     }
 
 
+def _query_suivpro(sql, params):
+    if not (pymssql and CYCLADES_DB_HOST):
+        raise HTTPException(status_code=503, detail="Pripojeni na Cyclades neni nakonfigurovano.")
+    try:
+        conn = pymssql.connect(
+            server=CYCLADES_DB_HOST,
+            user=CYCLADES_DB_USER,
+            password=CYCLADES_DB_PASSWORD,
+            database="SUIVPRO",
+            timeout=5,
+            login_timeout=5,
+        )
+        try:
+            cur = conn.cursor(as_dict=True)
+            cur.execute(sql, params)
+            return cur.fetchall()
+        finally:
+            conn.close()
+    except pymssql.Error:
+        raise HTTPException(status_code=502, detail="Dotaz na Cyclades selhal.")
+
+
+def _machine_code_for_mac_refmac(mac_refmac):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT machine_code FROM machines WHERE cyclades_mac_refmac=%s", (mac_refmac,))
+        row = cur.fetchone()
+    return row["machine_code"] if row else None
+
+
+@app.get("/api/cycles/by-package")
+def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
+    """Presna dohledatelnost 'ktere cykly jsou v tomhle konkretnim baleni':
+    najde deklaraci stitku v BILAN_SAISIE_EQUIPE (cas, stroj, karton,
+    deklarovane mnozstvi), pak predchozi stitek ve STEJNE cislene rade
+    (label-1) jako zacatek casoveho okna (stitky bezi ve vice paralelnich
+    radach pod jednou zakazkou - typicky vicedutinova forma, kazda
+    dutina/produkt ma svou radu, proto nelze brat jen "posledni deklaraci
+    na stroji"). Vrati presne cykly z nasi DB spadajici do tohoto okna.
+    """
+    rows = _query_suivpro(
+        "SELECT BILPSEQU_DATESAISIE, BILPSEQU_REFCARTON, BILPSEQU_QTEBONNESAISIE, "
+        "BILPSEQU_CODEOP, OF_REFOF, BILPSEQU_REFMAC "
+        "FROM BILAN_SAISIE_EQUIPE WHERE BILPSEQU_REFETIQUETTE=%s",
+        (label,),
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Stitek nenalezen v zadne deklaraci vyroby.")
+    decl = rows[0]
+
+    machine_code = _machine_code_for_mac_refmac(decl["BILPSEQU_REFMAC"])
+    if not machine_code:
+        raise HTTPException(status_code=404, detail="Stroj z Cyclades neni namapovan na zadny nas machine_code.")
+
+    prev_label = str(int(label) - 1)
+    prev_rows = _query_suivpro(
+        "SELECT TOP 1 BILPSEQU_DATESAISIE FROM BILAN_SAISIE_EQUIPE "
+        "WHERE BILPSEQU_REFETIQUETTE=%s AND BILPSEQU_REFMAC=%s",
+        (prev_label, decl["BILPSEQU_REFMAC"]),
+    )
+    if prev_rows:
+        start_time = prev_rows[0]["BILPSEQU_DATESAISIE"]
+    else:
+        of_rows = _query_suivpro(
+            "SELECT OF_DATELANCER FROM [OF] WHERE OF_REFOF=%s AND MAC_REFMAC=%s",
+            (decl["OF_REFOF"], decl["BILPSEQU_REFMAC"]),
+        )
+        start_time = of_rows[0]["OF_DATELANCER"] if of_rows else None
+
+    with get_conn() as conn, conn.cursor() as cur:
+        if start_time:
+            cur.execute(
+                "SELECT time, machine_code, cycle_count, cycle_time_s, order_ref, params FROM cycles "
+                "WHERE machine_code=%s AND time > %s AND time <= %s "
+                "ORDER BY cycle_count LIMIT %s",
+                (machine_code, start_time, decl["BILPSEQU_DATESAISIE"], limit),
+            )
+        else:
+            cur.execute(
+                "SELECT time, machine_code, cycle_count, cycle_time_s, order_ref, params FROM cycles "
+                "WHERE machine_code=%s AND time <= %s "
+                "ORDER BY cycle_count DESC LIMIT %s",
+                (machine_code, decl["BILPSEQU_DATESAISIE"], limit),
+            )
+        cycles = cur.fetchall()
+        if not start_time:
+            cycles.reverse()
+
+    return {
+        "label": label,
+        "order_ref": decl["OF_REFOF"],
+        "machine_code": machine_code,
+        "carton_ref": decl["BILPSEQU_REFCARTON"],
+        "declared_qty": decl["BILPSEQU_QTEBONNESAISIE"],
+        "declared_at": decl["BILPSEQU_DATESAISIE"],
+        "operator_code": decl["BILPSEQU_CODEOP"],
+        "window_start": start_time,
+        "cycles_found": len(cycles),
+        "cycles": cycles,
+    }
+
+
 _status_cache = {}  # machine_code -> {"data": {...}, "ts": float}
 
 
