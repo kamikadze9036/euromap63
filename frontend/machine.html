@@ -32,35 +32,37 @@
       <div class="card"><div class="card__label">Další štítek</div><div class="card__value" id="val-next-label">–</div></div>
     </section>
 
-    <section class="chart-section">
-      <div class="chart-header">
-        <h2 id="chart-title">Doba cyklu</h2>
-        <div class="chart-header__right">
-          <label class="chart-window">
-            Posledních
-            <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
-            cyklů
-          </label>
-          <button type="button" id="chart-reset-zoom" class="chart-reset-btn" title="Kolečko myši = zoom, tažení = posun, dvojklik = reset">Reset zoomu</button>
+    <div class="content-grid">
+      <section class="chart-section">
+        <div class="chart-header">
+          <h2 id="chart-title">Doba cyklu</h2>
+          <div class="chart-header__right">
+            <label class="chart-window">
+              Posledních
+              <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
+              cyklů
+            </label>
+            <button type="button" id="chart-reset-zoom" class="chart-reset-btn" title="Kolečko myši = zoom, tažení = posun, dvojklik = reset">Reset zoomu</button>
+          </div>
         </div>
-      </div>
-      <div id="cycleChartContainer" class="chart-container"></div>
-    </section>
+        <div id="cycleChartContainer" class="chart-container"></div>
+      </section>
 
-    <section class="params">
-      <div class="params-header">
-        <h2>Všechny parametry (poslední takt) — klikni na řádek pro zobrazení historie v grafu</h2>
-        <input type="text" id="paramFilter" class="param-filter" placeholder="Filtrovat parametry…" autocomplete="off">
-      </div>
-      <div class="params-table-wrap">
-        <table id="paramsTable">
-          <thead>
-            <tr><th>Parametr</th><th>Popis</th><th>Hodnota</th><th>Jednotka</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
+      <section class="params">
+        <div class="params-header">
+          <h2>Všechny parametry (poslední takt) — klikni na řádek pro zobrazení historie v grafu</h2>
+          <input type="text" id="paramFilter" class="param-filter" placeholder="Filtrovat parametry…" autocomplete="off">
+        </div>
+        <div class="params-table-wrap">
+          <table id="paramsTable">
+            <thead>
+              <tr><th>Parametr</th><th>Popis</th><th>Hodnota</th><th>Jednotka</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   </main>
 
   <script src="vendor/uPlot.min.js"></script>
