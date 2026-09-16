@@ -11,6 +11,7 @@
   var statusEl = document.getElementById("status");
   var pageTitleEl = document.getElementById("page-title");
   var machineInfoEl = document.getElementById("machineInfo");
+  var stateBadgeEl = document.getElementById("machine-state-badge");
   var elCycles = document.getElementById("val-cycles");
   var elCycleTime = document.getElementById("val-cycletime");
   var elAvg = document.getElementById("val-avg");
@@ -51,6 +52,44 @@
     });
   }
 
+  var STATE_LABELS = {
+    bezi: "Běží",
+    stoji: "Stojí",
+    bez_zakazky: "Bez zakázky",
+    neznamo: "Neznámo",
+  };
+
+  function fmtDuration(sec) {
+    if (!sec || sec <= 0) return "–";
+    var m = Math.floor(sec / 60);
+    var s = Math.round(sec % 60);
+    return m > 0 ? (m + " min " + s + " s") : (s + " s");
+  }
+
+  function updateStateBadge(m) {
+    if (!stateBadgeEl) return;
+    stateBadgeEl.hidden = false;
+    stateBadgeEl.className = "state-badge state-badge--" + (m.state || "neznamo");
+    stateBadgeEl.textContent = STATE_LABELS[m.state] || m.state || "–";
+
+    var downtimeChip = document.getElementById("chip-downtime");
+    if (m.state === "stoji") {
+      var text = escapeHtml(m.stop_reason || "neurčeno") + " (" + fmtDuration(m.stop_duration_s) + ")";
+      if (!downtimeChip) {
+        downtimeChip = document.createElement("span");
+        downtimeChip.id = "chip-downtime";
+        downtimeChip.className = "info-chip info-chip--downtime";
+        if (machineInfoEl) {
+          machineInfoEl.hidden = false;
+          machineInfoEl.appendChild(downtimeChip);
+        }
+      }
+      downtimeChip.innerHTML = '<span class="info-chip__label">Prostoj</span><span class="info-chip__value">' + text + '</span>';
+    } else if (downtimeChip) {
+      downtimeChip.remove();
+    }
+  }
+
   function loadMachineInfo() {
     fetchJson("/api/machines/info?machine=" + encodeURIComponent(MACHINE))
       .then(function (info) {
@@ -61,9 +100,6 @@
         if (!machineInfoEl) return;
         var chips = [];
         if (info.cyclades_label) chips.push(["Typ", info.cyclades_label]);
-        if (info.type_label) chips.push(["Kategorie", info.type_label]);
-        if (info.atelier) chips.push(["Dílna", info.atelier]);
-        if (info.section) chips.push(["Sekce", info.section]);
         if (!chips.length) return;
         machineInfoEl.hidden = false;
         machineInfoEl.innerHTML = chips.map(function (c) {
@@ -364,6 +400,7 @@
         if (elTool) {
           elTool.textContent = m.tool_ref ? (m.tool_label ? m.tool_ref + " — " + m.tool_label : m.tool_ref) : "–";
         }
+        updateStateBadge(m);
       })
       .catch(function () {});
   }

@@ -273,6 +273,35 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 .machine-card.state--bez_zakazky { border-left-color: var(--muted); }
 .machine-card.state--neznamo { border-left-color: var(--err); }
 
+.state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
+}
+.state-badge::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.state-badge--bezi { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.state-badge--stoji { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.state-badge--bez_zakazky { background: color-mix(in srgb, var(--muted) 18%, transparent); color: var(--muted); }
+.state-badge--neznamo { background: color-mix(in srgb, var(--err) 18%, transparent); color: var(--err); }
+
+.info-chip--downtime {
+  background: color-mix(in srgb, var(--warn) 15%, transparent);
+  border-color: var(--warn);
+}
+.info-chip--downtime .info-chip__label { color: var(--warn); }
+
 .machine-card__head {
   display: flex;
   justify-content: space-between;
