@@ -356,7 +356,7 @@ def _query_cyclades_machine_status(mac_refmac):
     Jinak stoji - duvod se dohleda v TYPES_ARRETS (ARR_REFARRET -> ARR_LIBARRET).
     """
     if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
-        return {"state": "neznamo", "order_ref": None, "tool_ref": None}
+        return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
     try:
         conn = pymssql.connect(
             server=CYCLADES_DB_HOST,
@@ -370,9 +370,10 @@ def _query_cyclades_machine_status(mac_refmac):
             cur = conn.cursor(as_dict=True)
             cur.execute(
                 "SELECT TOP 1 o.OF_REFOF, o.OUT_REFOUT, o.OF_CAUSEARRETCOURANT, "
-                "o.OF_DUREARRETCOURANT, t.ARR_LIBARRET "
+                "o.OF_DUREARRETCOURANT, t.ARR_LIBARRET, u.OUT_LIBOUT, u.OUT_DATEMONTAGE "
                 "FROM [OF] o "
                 "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = o.OF_CAUSEARRETCOURANT "
+                "LEFT JOIN OUTIL u ON u.OUT_REFOUT = o.OUT_REFOUT "
                 "WHERE o.MAC_REFMAC=%s AND o.OF_DATEFINOF IS NULL "
                 "ORDER BY o.OF_DATELANCER DESC",
                 (mac_refmac,),
@@ -382,16 +383,18 @@ def _query_cyclades_machine_status(mac_refmac):
             conn.close()
     except pymssql.Error:
         log.warning("Cyclades dotaz na stav stroje %s selhal.", mac_refmac)
-        return {"state": "neznamo", "order_ref": None, "tool_ref": None}
+        return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
 
     if not row:
-        return {"state": "bez_zakazky", "order_ref": None, "tool_ref": None}
+        return {"state": "bez_zakazky", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
 
     running = row["OF_CAUSEARRETCOURANT"] == -2 and (row["OF_DUREARRETCOURANT"] or 0) == 0
     return {
         "state": "bezi" if running else "stoji",
         "order_ref": row["OF_REFOF"],
         "tool_ref": row["OUT_REFOUT"],
+        "tool_label": row["OUT_LIBOUT"],
+        "tool_mounted_since": _cyclades_local(row["OUT_DATEMONTAGE"]),
         "stop_cause": row["OF_CAUSEARRETCOURANT"],
         "stop_reason": None if running else row["ARR_LIBARRET"],
         "stop_duration_s": row["OF_DUREARRETCOURANT"],

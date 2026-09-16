@@ -16,6 +16,7 @@
   var elAvg = document.getElementById("val-avg");
   var elUpdated = document.getElementById("val-updated");
   var elOrder = document.getElementById("val-order");
+  var elTool = document.getElementById("val-tool");
   var elLastLabel = document.getElementById("val-last-label");
   var elNextLabel = document.getElementById("val-next-label");
   var paramsTbody = document.querySelector("#paramsTable tbody");
@@ -360,6 +361,9 @@
         if (!m) return;
         elLastLabel.textContent = m.last_label || "–";
         elNextLabel.textContent = m.next_label || "–";
+        if (elTool) {
+          elTool.textContent = m.tool_ref ? (m.tool_label ? m.tool_ref + " — " + m.tool_label : m.tool_ref) : "–";
+        }
       })
       .catch(function () {});
   }

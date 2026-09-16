@@ -22,6 +22,11 @@
     statusEl.textContent = text;
   }
 
+  function formatTool(m) {
+    if (!m.tool_ref) return "–";
+    return m.tool_label ? m.tool_ref + " — " + m.tool_label : m.tool_ref;
+  }
+
   function fmt(n, digits) {
     if (n === null || n === undefined || Number.isNaN(n)) return "–";
     return Number(n).toFixed(digits === undefined ? 2 : digits);
@@ -79,7 +84,7 @@
           '<div class="machine-card__metric"><span class="mc-label">Cyklus</span><span class="mc-value" data-field="cycle_count">' + (latest.cycle_count || "–") + '</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Doba cyklu</span><span class="mc-value" data-field="cycle_time_s">' + fmt(latest.cycle_time_s) + ' s</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Zakázka</span><span class="mc-value">' + escapeHtml(m.order_ref || "–") + '</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Forma</span><span class="mc-value">' + escapeHtml(m.tool_ref || "–") + '</span></div>' +
+          '<div class="machine-card__metric"><span class="mc-label">Forma</span><span class="mc-value">' + escapeHtml(formatTool(m)) + '</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Poslední štítek</span><span class="mc-value">' + escapeHtml(m.last_label || "–") + '</span></div>' +
           '<div class="machine-card__metric"><span class="mc-label">Další štítek</span><span class="mc-value">' + escapeHtml(m.next_label || "–") + '</span></div>' +
           stopRow +
