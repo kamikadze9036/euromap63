@@ -33,6 +33,8 @@
   var rangeFromInput = document.getElementById("rangeFrom");
   var rangeToInput = document.getElementById("rangeTo");
   var rangeApplyBtn = document.getElementById("rangeApply");
+  var downtimeTrackEl = document.getElementById("downtimeTrack");
+  var downtimeSummaryEl = document.getElementById("downtimeSummary");
 
   var paramDefs = {};
   var lastCycles = [];
@@ -86,9 +88,12 @@
 
   function fmtDuration(sec) {
     if (!sec || sec <= 0) return "–";
-    var m = Math.floor(sec / 60);
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
     var s = Math.round(sec % 60);
-    return m > 0 ? (m + " min " + s + " s") : (s + " s");
+    if (h > 0) return h + " h " + m + " min";
+    if (m > 0) return m + " min " + s + " s";
+    return s + " s";
   }
 
   function updateStateBadge(m) {
@@ -455,8 +460,65 @@
       .then(function (rows) {
         lastCycles = rows;
         initChart();
+        loadDowntimes();
       })
       .catch(function () {});
+  }
+
+  function resolveWindow() {
+    if (chartMode === "range" && rangeSince) {
+      return { since: rangeSince, until: rangeUntil || new Date().toISOString() };
+    }
+    if (lastCycles.length) {
+      return { since: lastCycles[0].time, until: lastCycles[lastCycles.length - 1].time };
+    }
+    return null;
+  }
+
+  function renderDowntimes(result) {
+    if (!downtimeTrackEl) return;
+    downtimeTrackEl.innerHTML = "";
+    var minT = new Date(result.since).getTime();
+    var maxT = new Date(result.until).getTime();
+    var span = maxT - minT || 1;
+
+    if (!result.segments.length) {
+      downtimeSummaryEl.textContent = "Bez prostojů v tomto okně";
+      return;
+    }
+
+    var totalDown = 0;
+    result.segments.forEach(function (seg) {
+      totalDown += seg.duration_s;
+      var startT = new Date(seg.start).getTime();
+      var endT = new Date(seg.end).getTime();
+      var leftPct = Math.max(0, (startT - minT) / span * 100);
+      var widthPct = Math.max(0.3, (endT - startT) / span * 100);
+      var bar = document.createElement("div");
+      bar.className = "downtime-bar";
+      bar.style.left = leftPct + "%";
+      bar.style.width = widthPct + "%";
+      bar.title =
+        (seg.reason || "Neznámý důvod") + "\n" +
+        new Date(seg.start).toLocaleString("cs-CZ") + " – " + new Date(seg.end).toLocaleString("cs-CZ") + "\n" +
+        "Délka: " + fmtDuration(seg.duration_s);
+      downtimeTrackEl.appendChild(bar);
+    });
+    downtimeSummaryEl.textContent = result.segments.length + " prostojů, celkem " + fmtDuration(totalDown);
+  }
+
+  function loadDowntimes() {
+    var win = resolveWindow();
+    if (!win || !downtimeTrackEl) return;
+    fetchJson(
+      "/api/downtimes?machine=" + encodeURIComponent(MACHINE) +
+      "&since=" + encodeURIComponent(win.since) +
+      "&until=" + encodeURIComponent(win.until)
+    )
+      .then(function (result) { renderDowntimes(result); })
+      .catch(function () {
+        if (downtimeSummaryEl) downtimeSummaryEl.textContent = "Chyba načtení";
+      });
   }
 
   function setActivePresetButton(key) {

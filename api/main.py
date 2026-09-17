@@ -24,6 +24,14 @@ def _cyclades_local(dt):
         return None
     return dt.replace(tzinfo=CYCLADES_TZ)
 
+
+def _to_cyclades_naive(dt):
+    """Opak _cyclades_local - nas UTC-aware cas prevede na naivni
+    Europe/Prague cas pro dotaz do Cyclades."""
+    if dt is None:
+        return None
+    return dt.astimezone(CYCLADES_TZ).replace(tzinfo=None)
+
 import psycopg2
 import psycopg2.extras
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -232,6 +240,78 @@ def _machine_code_for_mac_refmac(mac_refmac):
         cur.execute("SELECT machine_code FROM machines WHERE cyclades_mac_refmac=%s", (mac_refmac,))
         row = cur.fetchone()
     return row["machine_code"] if row else None
+
+
+def _mac_refmac_for_machine_code(machine_code):
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT cyclades_mac_refmac FROM machines WHERE machine_code=%s", (machine_code,))
+        row = cur.fetchone()
+    return row["cyclades_mac_refmac"] if row else None
+
+
+DOWNTIME_REASON_LOOKUP_PAD_MIN = 10  # jak daleko za konec mezery jeste hledat duvod v Cyclades
+MAX_DOWNTIME_SEGMENTS_ENRICHED = 200  # limit dotazu na Cyclades za jedno volani
+
+
+@app.get("/api/downtimes")
+def downtimes(machine: str, since: str, until: str = None, min_gap_s: float = Query(90, ge=10)):
+    """Casova osa prostoju odvozena z MEZER v nasich vlastnich cyklovych
+    datech (zadny cyklus po dobu >= min_gap_s = stroj stal) - na rozdil
+    od Cyclades HISTOEVENEMENTS (periodicky "sample" log s nejasnou
+    presnou semantikou zacatku/konce) je tohle nezpochybnitelne presne,
+    protoze vychazi primo z toho, kdy nas EUROMAP63 sber skutecne
+    zaznamenal/nezaznamenal cyklus. Cyclades HISTOEVENEMENTS se pouzije
+    jen jako doplnek pro CITELNY DUVOD té mezery (ARR_REFARRET/ARR_LIBARRET),
+    ne pro urceni hranic mezery samotne.
+    """
+    since_dt = datetime.fromisoformat(since)
+    until_dt = datetime.fromisoformat(until) if until else datetime.now(timezone.utc)
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT time, cycle_count FROM cycles WHERE machine_code=%s AND time >= %s AND time <= %s "
+            "ORDER BY cycle_count",
+            (machine, since_dt, until_dt),
+        )
+        rows = cur.fetchall()
+
+    segments = []
+    for prev, cur_row in zip(rows, rows[1:]):
+        gap = (cur_row["time"] - prev["time"]).total_seconds()
+        if gap >= min_gap_s:
+            segments.append({
+                "start": prev["time"],
+                "end": cur_row["time"],
+                "duration_s": gap,
+                "reason": None,
+                "reason_code": None,
+            })
+
+    mac_refmac = _mac_refmac_for_machine_code(machine)
+    if mac_refmac and pymssql and CYCLADES_DB_HOST:
+        for seg in segments[:MAX_DOWNTIME_SEGMENTS_ENRICHED]:
+            try:
+                hist = _query_cyclades(
+                    "SUIVPRO",
+                    "SELECT TOP 1 h.ARR_REFARRET, t.ARR_LIBARRET FROM HISTOEVENEMENTS h "
+                    "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = h.ARR_REFARRET "
+                    "WHERE h.HISEVE_REFMAC=%s AND h.ARR_REFARRET <> 255 "
+                    "AND h.HISEVE_DATEEVE >= %s AND h.HISEVE_DATEEVE <= DATEADD(minute, %s, %s) "
+                    "ORDER BY h.HISEVE_DATEEVE",
+                    (
+                        mac_refmac,
+                        _to_cyclades_naive(seg["start"]),
+                        DOWNTIME_REASON_LOOKUP_PAD_MIN,
+                        _to_cyclades_naive(seg["end"]),
+                    ),
+                )
+            except HTTPException:
+                hist = None
+            if hist:
+                seg["reason_code"] = hist[0]["ARR_REFARRET"]
+                seg["reason"] = hist[0]["ARR_LIBARRET"]
+
+    return {"since": since_dt, "until": until_dt, "min_gap_s": min_gap_s, "segments": segments}
 
 
 @app.get("/api/cycles/by-package")
