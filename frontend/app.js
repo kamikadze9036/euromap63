@@ -269,7 +269,7 @@
 
     var opts = {
       width: chartContainer.clientWidth || 900,
-      height: 260,
+      height: 420,
       plugins: [wheelZoomPlugin(0.75)],
       cursor: { drag: { x: false, y: false } },
       scales: { x: { time: true } },
@@ -331,10 +331,14 @@
       tr.addEventListener("click", function () { selectParam(key); });
 
       var tdKey = document.createElement("td");
+      tdKey.className = "truncate";
       tdKey.textContent = key;
+      tdKey.title = key;
 
       var tdLabel = document.createElement("td");
+      tdLabel.className = "truncate";
       tdLabel.textContent = def.label || "–";
+      tdLabel.title = def.label || "";
 
       var tdVal = document.createElement("td");
       tdVal.className = "num";
@@ -532,7 +536,7 @@
   });
 
   window.addEventListener("resize", function () {
-    if (chart) chart.setSize({ width: chartContainer.clientWidth || 900, height: 260 });
+    if (chart) chart.setSize({ width: chartContainer.clientWidth || 900, height: 420 });
   });
 
   // Vychozi vyber: 24h (odpovida tlacitku s "active" tridou primo v HTML)

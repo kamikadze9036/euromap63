@@ -59,9 +59,13 @@
         var def = defs[key] || {};
         var tr = document.createElement("tr");
         var tdKey = document.createElement("td");
+        tdKey.className = "truncate";
         tdKey.textContent = key;
+        tdKey.title = key;
         var tdLabel = document.createElement("td");
+        tdLabel.className = "truncate";
         tdLabel.textContent = def.label || "–";
+        tdLabel.title = def.label || "";
         var tdVal = document.createElement("td");
         tdVal.className = "num";
         tdVal.textContent = params[key];

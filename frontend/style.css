@@ -141,12 +141,27 @@ canvas { max-width: 100%; height: auto; }
   min-width: 200px;
 }
 
-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; table-layout: fixed; }
 th, td {
   text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
+td.truncate {
+  max-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+#paramsTable th:nth-child(1), #paramsTable td:nth-child(1),
+#detailTable th:nth-child(1), #detailTable td:nth-child(1) { width: 34%; }
+#paramsTable th:nth-child(2), #paramsTable td:nth-child(2),
+#detailTable th:nth-child(2), #detailTable td:nth-child(2) { width: 38%; }
+#paramsTable th:nth-child(3), #paramsTable td:nth-child(3),
+#detailTable th:nth-child(3), #detailTable td:nth-child(3) { width: 16%; }
+#paramsTable th:nth-child(4), #paramsTable td:nth-child(4),
+#detailTable th:nth-child(4), #detailTable td:nth-child(4) { width: 12%; }
 th { color: var(--muted); font-weight: 600; }
 td.num { font-variant-numeric: tabular-nums; text-align: right; }
 
