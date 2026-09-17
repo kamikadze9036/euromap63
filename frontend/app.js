@@ -36,6 +36,7 @@
   var downtimeTrackEl = document.getElementById("downtimeTrack");
   var downtimeSummaryEl = document.getElementById("downtimeSummary");
   var downtimeLegendEl = document.getElementById("downtimeLegend");
+  var downtimeTooltipEl = document.getElementById("downtimeTooltip");
 
   var paramDefs = {};
   var lastCycles = [];
@@ -98,15 +99,25 @@
   }
 
   // Kategoricka paleta pro duvody prostoju (8 fixnich slotu, viz style.css
-  // --series-1..8). Barva se odvozuje z reason_code hashem, ne poradim
-  // vyskytu v aktualnim okne - stejny duvod tak ma vzdy stejnou barvu
-  // bez ohledu na to, jake dalsi duvody se zrovna zobrazuji.
+  // --series-1..8). Barva se prideluje podle poradi PRVNIHO vyskytu
+  // duvodu v aktualne zobrazenem okne (ne hashem kodu - napr. "Porucha
+  // nastroje" kod 5 a "Preventivni udrzba" kod 29 by na modulo-8 hash
+  // spadly do stejneho slotu). Diky tomu se nikdy nesrazi dva duvody,
+  // co se zobrazuji soucasne; napric ruznymi okny se barva stejneho
+  // duvodu muze lisit, pokud se zmeni mnozina soucasne zobrazenych duvodu.
   var UNKNOWN_REASON_COLOR = "var(--muted)";
 
-  function downtimeColor(reasonCode) {
-    if (reasonCode === null || reasonCode === undefined) return UNKNOWN_REASON_COLOR;
-    var slot = ((reasonCode % 8) + 8) % 8;
-    return "var(--series-" + (slot + 1) + ")";
+  function makeReasonColorAssigner() {
+    var order = [];
+    return function (label) {
+      if (label === null || label === undefined) return UNKNOWN_REASON_COLOR;
+      var idx = order.indexOf(label);
+      if (idx === -1) {
+        idx = order.length;
+        order.push(label);
+      }
+      return "var(--series-" + ((idx % 8) + 1) + ")";
+    };
   }
 
   function updateStateBadge(m) {
@@ -488,6 +499,23 @@
     return null;
   }
 
+  function showDowntimeTooltip(evt, html) {
+    var tip = downtimeTooltipEl;
+    if (!tip) return;
+    tip.innerHTML = html;
+    tip.hidden = false;
+    var x = evt.clientX + 14;
+    var y = evt.clientY + 14;
+    var maxX = window.innerWidth - tip.offsetWidth - 8;
+    var maxY = window.innerHeight - tip.offsetHeight - 8;
+    tip.style.left = Math.max(4, Math.min(x, maxX)) + "px";
+    tip.style.top = Math.max(4, Math.min(y, maxY)) + "px";
+  }
+
+  function hideDowntimeTooltip() {
+    if (downtimeTooltipEl) downtimeTooltipEl.hidden = true;
+  }
+
   function renderDowntimes(result) {
     if (!downtimeTrackEl) return;
     downtimeTrackEl.innerHTML = "";
@@ -503,11 +531,13 @@
 
     var totalDown = 0;
     var byReason = {}; // reason label -> { color, duration }
+    var assignColor = makeReasonColorAssigner();
 
     result.segments.forEach(function (seg) {
       totalDown += seg.duration_s;
-      var color = downtimeColor(seg.reason_code);
-      var label = seg.reason || "Neznámý důvod";
+      var label = seg.reason || null;
+      var color = assignColor(label);
+      var displayLabel = label || "Neznámý důvod";
 
       var startT = new Date(seg.start).getTime();
       var endT = new Date(seg.end).getTime();
@@ -518,14 +548,19 @@
       bar.style.left = leftPct + "%";
       bar.style.width = widthPct + "%";
       bar.style.background = color;
-      bar.title =
-        label + "\n" +
-        new Date(seg.start).toLocaleString("cs-CZ") + " – " + new Date(seg.end).toLocaleString("cs-CZ") + "\n" +
-        "Délka: " + fmtDuration(seg.duration_s);
+
+      var tooltipHtml =
+        '<strong>' + escapeHtml(displayLabel) + '</strong><br>' +
+        escapeHtml(new Date(seg.start).toLocaleString("cs-CZ")) + ' – ' + escapeHtml(new Date(seg.end).toLocaleString("cs-CZ")) + '<br>' +
+        'Délka: ' + escapeHtml(fmtDuration(seg.duration_s));
+      bar.addEventListener("mouseenter", function (evt) { showDowntimeTooltip(evt, tooltipHtml); });
+      bar.addEventListener("mousemove", function (evt) { showDowntimeTooltip(evt, tooltipHtml); });
+      bar.addEventListener("mouseleave", hideDowntimeTooltip);
+
       downtimeTrackEl.appendChild(bar);
 
-      if (!byReason[label]) byReason[label] = { color: color, duration: 0 };
-      byReason[label].duration += seg.duration_s;
+      if (!byReason[displayLabel]) byReason[displayLabel] = { color: color, duration: 0 };
+      byReason[displayLabel].duration += seg.duration_s;
     });
 
     if (downtimeLegendEl) {

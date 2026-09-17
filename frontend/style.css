@@ -320,13 +320,27 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   top: 2px;
   bottom: 2px;
   background: var(--muted);
-  cursor: help;
+  cursor: pointer;
   min-width: 2px;
   border-radius: 3px;
   outline: 2px solid var(--surface);
   outline-offset: -1px;
 }
 .downtime-bar:hover { filter: brightness(1.2); }
+
+.downtime-tooltip {
+  position: fixed;
+  z-index: 1000;
+  background: var(--text);
+  color: var(--bg);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  max-width: 280px;
+}
 
 .downtime-legend {
   display: flex;
