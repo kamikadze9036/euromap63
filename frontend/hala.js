@@ -56,6 +56,29 @@
     return "machine-card-" + machineCode.replace(/[^a-zA-Z0-9_-]/g, "_");
   }
 
+  // Karty se řadí podle čísla lisu (tonáž-pořadí, např. "P1100-03" ->
+  // [1100, 3]), ne abecedně podle machine_code/cyclades_mac_refmac -
+  // prostá abeceda by řadila "P1000-11" před "P220-002" (řetězcově '1' <
+  // '2'), i když 220 < 1000. Stroje bez rozpoznatelného vzoru (zatím žádné)
+  // spadnou na konec, seřazené abecedně mezi sebou.
+  function pressSortKey(m) {
+    var ref = m.cyclades_mac_refmac || m.machine_code || "";
+    var match = /^P?(\d+)-(\d+)/.exec(ref);
+    if (match) return [0, parseInt(match[1], 10), parseInt(match[2], 10), ref];
+    return [1, 0, 0, ref];
+  }
+
+  function sortMachinesByNumber(machines) {
+    return machines.slice().sort(function (a, b) {
+      var ka = pressSortKey(a), kb = pressSortKey(b);
+      for (var i = 0; i < ka.length; i++) {
+        if (ka[i] < kb[i]) return -1;
+        if (ka[i] > kb[i]) return 1;
+      }
+      return 0;
+    });
+  }
+
   function renderGrid(machines) {
     gridEl.innerHTML = "";
     if (!machines.length) {
@@ -126,6 +149,7 @@
     fetchJson("/api/machines/status")
       .then(function (machines) {
         setStatus("ok", "Online");
+        machines = sortMachinesByNumber(machines);
         renderGrid(machines);
         machines.forEach(function (m) { openSocket(m.machine_code); });
       })

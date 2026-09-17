@@ -20,6 +20,7 @@
   var elTool = document.getElementById("val-tool");
   var elLastLabel = document.getElementById("val-last-label");
   var elNextLabel = document.getElementById("val-next-label");
+  var elWorstCavity = document.getElementById("val-worst-cavity");
   var paramsTbody = document.querySelector("#paramsTable tbody");
   var paramFilterInput = document.getElementById("paramFilter");
   var paramFilterText = "";
@@ -687,6 +688,26 @@
       .catch(function () {});
   }
 
+  function pollCavityScrap() {
+    if (!elWorstCavity) return;
+    fetchJson("/api/machines/cavity-scrap?machine=" + encodeURIComponent(MACHINE))
+      .then(function (data) {
+        elWorstCavity.classList.remove("card__value--danger");
+        if (!data.worst) {
+          elWorstCavity.textContent = "–";
+          elWorstCavity.title = "";
+          return;
+        }
+        elWorstCavity.textContent = data.worst.product + ": " + fmt(data.worst.reject_pct, 1) + " %";
+        if (data.worst.reject_pct >= 10) elWorstCavity.classList.add("card__value--danger");
+        elWorstCavity.title = (data.cavities || []).map(function (c) {
+          return c.product + ": " + (c.reject_pct === null ? "–" : fmt(c.reject_pct, 1) + " %") +
+            " (zmetek " + c.qty_reject + " / vyrobeno " + c.qty_fab + ")";
+        }).join("\n");
+      })
+      .catch(function () {});
+  }
+
   function pollChart() {
     var url;
     if (chartMode === "range" && rangeSince) {
@@ -935,7 +956,9 @@
   loadParamDefs().then(loadInitial);
   pollStats();
   pollLabels();
+  pollCavityScrap();
   connectWs();
   setInterval(pollStats, 5000);
   setInterval(pollLabels, 5000);
+  setInterval(pollCavityScrap, 15000);
 })();

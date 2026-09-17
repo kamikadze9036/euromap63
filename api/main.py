@@ -706,6 +706,83 @@ async def on_startup():
     asyncio.create_task(_poll_and_broadcast_loop())
 
 
+_cavity_scrap_cache = {}  # (machine_code, order_ref) -> {"data": [...], "ts": float}
+CAVITY_SCRAP_CACHE_TTL_SEC = 15
+CAVITY_SCRAP_ROW_LIMIT = 1000
+
+
+def _query_cavity_scrap(mac_refmac, order_ref):
+    """Zmetkovitost po kavitach/produktech pro aktualni zakazku (OF) na
+    danem stroji. Kazda kavita vicekavitove formy ma v Cyclades vlastni
+    PROD_REFPROD (viz komentar u /api/cycles/by-package - stitky/deklarace
+    bezi ve vice paralelnich radach pod jednou zakazkou, jedna rada na
+    kavitu/produkt). BILAN_SAISIE_EQUIPE.BILPSEQU_QTEFAB/QTEREBUT jsou
+    kumulativni soucty za aktualni smenu (kazda dalsi deklarace uz
+    obsahuje predchozi mnozstvi) - bereme tedy jen NEJNOVEJSI radek na
+    kazdy produkt, ne soucet vsech radku (to by zmetkovitost umocnilo).
+    Procento pocitame jako QTEREBUT/QTEFAB (stejna definice jako Cycladi
+    vlastni dbo.TauxRebuts - QteFabriquee jako jmenovatel, ne QteBonne+
+    QteRebut, protoze se soucet nerovna QteFabriquee - viz i jine kategorie
+    mnozstvi, napr. cekajici na rozhodnuti).
+    """
+    if not (pymssql and CYCLADES_DB_HOST and mac_refmac and order_ref):
+        return []
+    rows = _query_cyclades(
+        "SUIVPRO",
+        "SELECT TOP %d PROD_REFPROD, BILPSEQU_QTEFAB, BILPSEQU_QTEBONNE, BILPSEQU_QTEREBUT, BILPSEQU_DATESAISIE "
+        "FROM BILAN_SAISIE_EQUIPE WHERE BILPSEQU_REFMAC=%%s AND OF_REFOF=%%s "
+        "ORDER BY BILPSEQU_DATESAISIE DESC" % CAVITY_SCRAP_ROW_LIMIT,
+        (mac_refmac, order_ref),
+    )
+    latest_by_product = {}
+    for r in rows:
+        p = r["PROD_REFPROD"]
+        if p not in latest_by_product:
+            latest_by_product[p] = r
+
+    cavities = []
+    for product, r in latest_by_product.items():
+        qty_fab = float(r["BILPSEQU_QTEFAB"] or 0)
+        qty_reject = float(r["BILPSEQU_QTEREBUT"] or 0)
+        pct = (qty_reject / qty_fab * 100) if qty_fab > 0 else None
+        cavities.append({
+            "product": product,
+            "qty_fab": qty_fab,
+            "qty_good": float(r["BILPSEQU_QTEBONNE"] or 0),
+            "qty_reject": qty_reject,
+            "reject_pct": pct,
+            "declared_at": _cyclades_local(r["BILPSEQU_DATESAISIE"]),
+        })
+    cavities.sort(key=lambda c: (c["reject_pct"] is None, -(c["reject_pct"] or 0)))
+    return cavities
+
+
+@app.get("/api/machines/cavity-scrap")
+def machine_cavity_scrap(machine: str):
+    """Zmetkovitost nejhorsi kavity aktualni zakazky na danem stroji -
+    viz _query_cavity_scrap. Bez Cyclades pripojeni nebo bez aktivni
+    zakazky vraci prazdny seznam (ne chybu), aby detail stroje bezel
+    dal i pro stroje zatim bez teto integrace.
+    """
+    mac_refmac = _mac_refmac_for_machine_code(machine)
+    status = get_machine_status(machine, mac_refmac)
+    order_ref = status.get("order_ref")
+
+    now = time.time()
+    cache_key = (machine, order_ref)
+    cached = _cavity_scrap_cache.get(cache_key)
+    if cached and now - cached["ts"] < CAVITY_SCRAP_CACHE_TTL_SEC:
+        cavities = cached["data"]
+    else:
+        cavities = _query_cavity_scrap(mac_refmac, order_ref)
+        if len(_cavity_scrap_cache) > 500:
+            _cavity_scrap_cache.clear()
+        _cavity_scrap_cache[cache_key] = {"data": cavities, "ts": now}
+
+    worst = cavities[0] if cavities and cavities[0]["reject_pct"] is not None else None
+    return {"order_ref": order_ref, "cavities": cavities, "worst": worst}
+
+
 @app.get("/api/stats")
 def stats(machine: str, window: int = Query(100, le=5000)):
     with get_conn() as conn, conn.cursor() as cur:
