@@ -70,4 +70,11 @@ ActPrsHldSpecMax[1]
 ActPrsMachSpecMax
 @080ETGraviDos2.MassPerc
 @080ETGraviPseudoDos.MassPerc
+@080CycRovMonit\CycVal.PdeValue
+@080CycRovMonit\PDESpecial0.PDESpecialBase
+@080ETRovMonit.SetNumber
+@080ETRovMonit.MinNumber
+@080ETRovMonit.MaxNumber
+@080ETRovMonit.ActNumber
+@080ETRovCtrl1.RovTEX
 ;
