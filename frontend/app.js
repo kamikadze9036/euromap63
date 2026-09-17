@@ -353,7 +353,7 @@
     var hasPair = !!(pairKey && paramDefs[pairKey]);
     if (hasPair) {
       series.push({
-        label: paramLabel(pairKey) + " (zadáno)",
+        label: paramLabel(pairKey),
         stroke: muted,
         width: 1.25,
         dash: [4, 3],
