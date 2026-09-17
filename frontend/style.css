@@ -315,6 +315,18 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   border-radius: 6px;
   overflow: hidden;
 }
+/* Leva/prava hranice se nastavuji z JS (viz syncDowntimePlotArea) tak, aby
+   presne odpovidaly plotovaci ploche uPlot grafu nad timto pruhem (ktera
+   zacina az za osou Y, ne na levem okraji kontejneru). Bez tohohle by se
+   sloupce prostoju vizualne rozjizdely od grafu pri zoomu/panu i pri
+   zmene sirky okna. */
+.downtime-plot-area {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+}
 .downtime-bar {
   position: absolute;
   top: 2px;

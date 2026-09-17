@@ -34,6 +34,7 @@
   var rangeToInput = document.getElementById("rangeTo");
   var rangeApplyBtn = document.getElementById("rangeApply");
   var downtimeTrackEl = document.getElementById("downtimeTrack");
+  var downtimePlotAreaEl = document.getElementById("downtimePlotArea");
   var downtimeSummaryEl = document.getElementById("downtimeSummary");
   var downtimeLegendEl = document.getElementById("downtimeLegend");
   var downtimeTooltipEl = document.getElementById("downtimeTooltip");
@@ -522,10 +523,24 @@
     if (downtimeTooltipEl) downtimeTooltipEl.hidden = true;
   }
 
+  // Zarovna kresici plochu prostoju (downtime-plot-area) presne na plotovaci
+  // obdelnik uPlot grafu nad ni (chart.over pokryva jen samotnou plochu dat,
+  // bez osy Y a legendy) - jinak by pri jine sirce popisku osy Y (napr. po
+  // zoomu, kdy se zmeni rozsah hodnot) sloupce prostoju nesedely na sirku
+  // s grafem.
+  function syncDowntimePlotArea() {
+    if (!chart || !chart.over || !downtimePlotAreaEl || !downtimeTrackEl) return;
+    var overRect = chart.over.getBoundingClientRect();
+    var trackRect = downtimeTrackEl.getBoundingClientRect();
+    downtimePlotAreaEl.style.left = (overRect.left - trackRect.left) + "px";
+    downtimePlotAreaEl.style.width = overRect.width + "px";
+  }
+
   function renderDowntimesForRange(minT, maxT) {
-    if (!downtimeTrackEl) return;
+    if (!downtimeTrackEl || !downtimePlotAreaEl) return;
     if (!lastDowntimeResult) return;
-    downtimeTrackEl.innerHTML = "";
+    syncDowntimePlotArea();
+    downtimePlotAreaEl.innerHTML = "";
     if (downtimeLegendEl) downtimeLegendEl.innerHTML = "";
     var span = maxT - minT || 1;
 
@@ -571,7 +586,7 @@
       bar.addEventListener("mousemove", function (evt) { showDowntimeTooltip(evt, tooltipHtml); });
       bar.addEventListener("mouseleave", hideDowntimeTooltip);
 
-      downtimeTrackEl.appendChild(bar);
+      downtimePlotAreaEl.appendChild(bar);
 
       if (!byReason[displayLabel]) byReason[displayLabel] = { color: color, duration: 0 };
       byReason[displayLabel].duration += visibleDurationS;
@@ -692,6 +707,9 @@
 
   window.addEventListener("resize", function () {
     if (chart) chart.setSize({ width: chartContainer.clientWidth || 900, height: 420 });
+    if (chart && lastDowntimeResult) {
+      renderDowntimesForRange(chart.scales.x.min * 1000, chart.scales.x.max * 1000);
+    }
   });
 
   // Vychozi vyber: 24h (odpovida tlacitku s "active" tridou primo v HTML)
