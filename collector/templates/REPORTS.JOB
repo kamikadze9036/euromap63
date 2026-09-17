@@ -84,4 +84,14 @@ ActPrsMachSpecMax
 @080ETRovMonit.MaxNumber
 @080ETRovMonit.ActNumber
 @080ETRovCtrl1.RovTEX
+@080CycGraviMassFlowPerc1\CycVal.PdeValue
+@080CycGraviMassFlowPerc2\CycVal.PdeValue
+@080CycGraviMassFlowPerc3\CycVal.PdeValue
+@080CycGraviMassFlowPerc4\CycVal.PdeValue
+@080CycGraviMassFlowPerc8\CycVal.PdeValue
+@080CycGraviMassFlowPerc1\PDESpecial0.PDESpecialBase
+@080CycGraviMassFlowPerc2\PDESpecial0.PDESpecialBase
+@080CycGraviMassFlowPerc3\PDESpecial0.PDESpecialBase
+@080CycGraviMassFlowPerc4\PDESpecial0.PDESpecialBase
+@080CycGraviMassFlowPerc8\PDESpecial0.PDESpecialBase
 ;
