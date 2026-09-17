@@ -38,14 +38,30 @@
       <section class="chart-section">
         <div class="chart-header">
           <h2 id="chart-title">Doba cyklu</h2>
-          <div class="chart-header__right">
-            <label class="chart-window">
-              Posledních
-              <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
-              cyklů
-            </label>
-            <button type="button" id="chart-reset-zoom" class="chart-reset-btn" title="Kolečko myši = zoom, tažení = posun, dvojklik = reset">Reset zoomu</button>
+          <button type="button" id="chart-reset-zoom" class="chart-reset-btn" title="Kolečko myši = zoom, tažení = posun, dvojklik = reset">Reset zoomu</button>
+        </div>
+        <div class="range-bar">
+          <div class="range-presets" id="rangePresets">
+            <button type="button" data-range="15m">15m</button>
+            <button type="button" data-range="1h">1h</button>
+            <button type="button" data-range="6h">6h</button>
+            <button type="button" data-range="24h" class="active">24h</button>
+            <button type="button" data-range="3d">3d</button>
+            <button type="button" data-range="7d">7d</button>
+            <button type="button" data-range="custom">Vlastní…</button>
+            <button type="button" data-range="count">Podle počtu</button>
           </div>
+          <div class="range-custom" id="rangeCustom" hidden>
+            <input type="datetime-local" id="rangeFrom">
+            <span>–</span>
+            <input type="datetime-local" id="rangeTo">
+            <button type="button" id="rangeApply">Použít</button>
+          </div>
+          <label class="chart-window" id="rangeCountWrap" hidden>
+            Posledních
+            <input type="number" id="chart-limit-input" min="10" max="2000" step="10" value="100">
+            cyklů
+          </label>
         </div>
         <div id="cycleChartContainer" class="chart-container"></div>
       </section>

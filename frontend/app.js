@@ -27,12 +27,35 @@
   var chartLimitInput = document.getElementById("chart-limit-input");
   var chartResetBtn = document.getElementById("chart-reset-zoom");
   var chartContainer = document.getElementById("cycleChartContainer");
+  var rangePresetsEl = document.getElementById("rangePresets");
+  var rangeCustomEl = document.getElementById("rangeCustom");
+  var rangeCountWrapEl = document.getElementById("rangeCountWrap");
+  var rangeFromInput = document.getElementById("rangeFrom");
+  var rangeToInput = document.getElementById("rangeTo");
+  var rangeApplyBtn = document.getElementById("rangeApply");
 
   var paramDefs = {};
   var lastCycles = [];
   var chartLimit = parseInt(chartLimitInput.value, 10) || 100;
   var ws = null;
   var chart = null;
+
+  // Rezim grafu: "count" = poslednich N cyklu (puvodni chovani), "range" =
+  // casove okno (presety 15m..7d nebo vlastni od-do), posilane na API jako
+  // since/until misto limit.
+  var chartMode = "range";
+  var rangeSince = null;
+  var rangeUntil = null;
+  var activeRangeKey = "24h"; // null kdyz je aktivni vlastni rozsah (fixni od-do)
+
+  var RANGE_MS = {
+    "15m": 15 * 60 * 1000,
+    "1h": 60 * 60 * 1000,
+    "6h": 6 * 60 * 60 * 1000,
+    "24h": 24 * 60 * 60 * 1000,
+    "3d": 3 * 24 * 60 * 60 * 1000,
+    "7d": 7 * 24 * 60 * 60 * 1000,
+  };
 
   if (pageTitleEl) pageTitleEl.textContent = "Euromap63 — " + MACHINE;
 
@@ -361,8 +384,17 @@
     renderParams(row.params || {});
 
     lastCycles.push(row);
-    if (lastCycles.length > chartLimit) {
+    if (chartMode === "count" && lastCycles.length > chartLimit) {
       lastCycles.splice(0, lastCycles.length - chartLimit);
+    } else if (chartMode === "range" && activeRangeKey) {
+      // Presetove okno ("poslednich X") plyne s casem - posun levou hranici
+      // dopredu a zahod body, co uz z ni vypadly, aby graf pri dlouho
+      // otevrene strance porad ukazoval "poslednich X", ne zamrzly usek.
+      rangeSince = new Date(Date.now() - RANGE_MS[activeRangeKey]).toISOString();
+      var minTime = Date.now() - RANGE_MS[activeRangeKey];
+      while (lastCycles.length && new Date(lastCycles[0].time).getTime() < minTime) {
+        lastCycles.shift();
+      }
     }
     updateChartData();
   }
@@ -406,12 +438,52 @@
   }
 
   function pollChart() {
-    fetchJson("/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&limit=" + chartLimit)
+    var url;
+    if (chartMode === "range" && rangeSince) {
+      url = "/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&since=" + encodeURIComponent(rangeSince);
+      if (rangeUntil) url += "&until=" + encodeURIComponent(rangeUntil);
+    } else {
+      url = "/api/cycles?machine=" + encodeURIComponent(MACHINE) + "&limit=" + chartLimit;
+    }
+    fetchJson(url)
       .then(function (rows) {
         lastCycles = rows;
         initChart();
       })
       .catch(function () {});
+  }
+
+  function setActivePresetButton(key) {
+    Array.prototype.forEach.call(rangePresetsEl.querySelectorAll("button"), function (btn) {
+      btn.classList.toggle("active", btn.dataset.range === key);
+    });
+  }
+
+  function selectPreset(key) {
+    if (key === "count") {
+      chartMode = "count";
+      activeRangeKey = null;
+      rangeCustomEl.hidden = true;
+      rangeCountWrapEl.hidden = false;
+      setActivePresetButton(key);
+      pollChart();
+      return;
+    }
+    if (key === "custom") {
+      activeRangeKey = null;
+      rangeCountWrapEl.hidden = true;
+      rangeCustomEl.hidden = false;
+      setActivePresetButton(key);
+      return;
+    }
+    chartMode = "range";
+    activeRangeKey = key;
+    rangeCustomEl.hidden = true;
+    rangeCountWrapEl.hidden = true;
+    rangeSince = new Date(Date.now() - RANGE_MS[key]).toISOString();
+    rangeUntil = null;
+    setActivePresetButton(key);
+    pollChart();
   }
 
   function connectWs() {
@@ -443,9 +515,26 @@
     initChart();
   });
 
+  rangePresetsEl.addEventListener("click", function (evt) {
+    var btn = evt.target.closest("button[data-range]");
+    if (!btn) return;
+    selectPreset(btn.dataset.range);
+  });
+
+  rangeApplyBtn.addEventListener("click", function () {
+    if (!rangeFromInput.value) return;
+    chartMode = "range";
+    rangeSince = new Date(rangeFromInput.value).toISOString();
+    rangeUntil = rangeToInput.value ? new Date(rangeToInput.value).toISOString() : null;
+    pollChart();
+  });
+
   window.addEventListener("resize", function () {
     if (chart) chart.setSize({ width: chartContainer.clientWidth || 900, height: 260 });
   });
+
+  // Vychozi vyber: 24h (odpovida tlacitku s "active" tridou primo v HTML)
+  rangeSince = new Date(Date.now() - RANGE_MS["24h"]).toISOString();
 
   updateChartTitle();
   loadMachineInfo();

@@ -197,12 +197,6 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   font-variant-numeric: tabular-nums;
 }
 
-.chart-header__right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
 .chart-reset-btn {
   font-size: 0.8rem;
   padding: 4px 10px;
@@ -213,6 +207,61 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   cursor: pointer;
 }
 .chart-reset-btn:hover { background: var(--border); }
+
+.range-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.range-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.range-presets button {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.range-presets button:hover { background: var(--border); }
+.range-presets button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.range-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.range-custom input[type="datetime-local"] {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.range-custom button {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
 
 .chart-container { width: 100%; overflow: hidden; }
 .chart-container .uplot { width: 100% !important; }

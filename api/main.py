@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -101,8 +101,26 @@ def latest_cycle(machine: str):
 
 
 @app.get("/api/cycles")
-def list_cycles(machine: str, limit: int = Query(200, le=2000)):
+def list_cycles(machine: str, limit: int = Query(200, le=2000), since: str = None, until: str = None):
+    """Bez since: chova se jako drive - poslednich `limit` cyklu.
+    Se since (a volitelne until, jinak do "ted"): casove okno misto poctu
+    cyklu - pro presety (15m/1h/6h/24h/3d/7d) a vlastni rozsah v dashboardu.
+    """
     with get_conn() as conn, conn.cursor() as cur:
+        if since:
+            try:
+                since_dt = datetime.fromisoformat(since)
+                until_dt = datetime.fromisoformat(until) if until else datetime.now(timezone.utc)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Neplatny format since/until (ocekavano ISO 8601).")
+            cur.execute(
+                "SELECT time, cycle_count, cycle_time_s, order_ref, params FROM cycles "
+                "WHERE machine_code=%s AND time >= %s AND time <= %s "
+                "ORDER BY cycle_count LIMIT %s",
+                (machine, since_dt, until_dt, 20000),
+            )
+            return cur.fetchall()
+
         cur.execute(
             "SELECT time, cycle_count, cycle_time_s, order_ref, params FROM cycles "
             "WHERE machine_code=%s ORDER BY cycle_count DESC LIMIT %s",
