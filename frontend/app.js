@@ -51,6 +51,7 @@
   var rangeSince = null;
   var rangeUntil = null;
   var activeRangeKey = "24h"; // null kdyz je aktivni vlastni rozsah (fixni od-do)
+  var lastDowntimeResult = null; // posledni nactena API odpoved, pro prekresleni pri zoomu grafu
 
   var RANGE_MS = {
     "15m": 15 * 60 * 1000,
@@ -206,7 +207,7 @@
   // ── uPlot graf s zoomem (kolecko mysi) a panem (tazeni) ──────────────
   // Standardni recept z uPlot demos (zoom-wheel.html), upraveno pro
   // jedinou X osu s casem. Dvojklik resetuje zoom na plny rozsah dat.
-  function wheelZoomPlugin(factor) {
+  function wheelZoomPlugin(factor, onRangeChange) {
     factor = factor || 0.75;
     var xMin, xMax, xRange;
 
@@ -269,6 +270,9 @@
             u.setScale("x", { min: clamped[0], max: clamped[1] });
           });
         },
+        setScale: function (u, key) {
+          if (key === "x" && onRangeChange) onRangeChange(u.scales.x.min, u.scales.x.max);
+        },
       },
     };
   }
@@ -299,7 +303,9 @@
     var opts = {
       width: chartContainer.clientWidth || 900,
       height: 420,
-      plugins: [wheelZoomPlugin(0.75)],
+      plugins: [wheelZoomPlugin(0.75, function (minSec, maxSec) {
+        renderDowntimesForRange(minSec * 1000, maxSec * 1000);
+      })],
       cursor: { drag: { x: false, y: false } },
       scales: { x: { time: true } },
       series: [
@@ -516,15 +522,20 @@
     if (downtimeTooltipEl) downtimeTooltipEl.hidden = true;
   }
 
-  function renderDowntimes(result) {
+  function renderDowntimesForRange(minT, maxT) {
     if (!downtimeTrackEl) return;
+    if (!lastDowntimeResult) return;
     downtimeTrackEl.innerHTML = "";
     if (downtimeLegendEl) downtimeLegendEl.innerHTML = "";
-    var minT = new Date(result.since).getTime();
-    var maxT = new Date(result.until).getTime();
     var span = maxT - minT || 1;
 
-    if (!result.segments.length) {
+    var segments = lastDowntimeResult.segments.filter(function (seg) {
+      var startT = new Date(seg.start).getTime();
+      var endT = new Date(seg.end).getTime();
+      return endT >= minT && startT <= maxT;
+    });
+
+    if (!segments.length) {
       downtimeSummaryEl.textContent = "Bez prostojů v tomto okně";
       return;
     }
@@ -533,16 +544,19 @@
     var byReason = {}; // reason label -> { color, duration }
     var assignColor = makeReasonColorAssigner();
 
-    result.segments.forEach(function (seg) {
-      totalDown += seg.duration_s;
+    segments.forEach(function (seg) {
+      var startT = new Date(seg.start).getTime();
+      var endT = new Date(seg.end).getTime();
+      var clippedStart = Math.max(startT, minT);
+      var clippedEnd = Math.min(endT, maxT);
+      var visibleDurationS = (clippedEnd - clippedStart) / 1000;
+      totalDown += visibleDurationS;
       var label = seg.reason || null;
       var color = assignColor(label);
       var displayLabel = label || "Neznámý důvod";
 
-      var startT = new Date(seg.start).getTime();
-      var endT = new Date(seg.end).getTime();
-      var leftPct = Math.max(0, (startT - minT) / span * 100);
-      var widthPct = Math.max(0.3, (endT - startT) / span * 100);
+      var leftPct = Math.max(0, (clippedStart - minT) / span * 100);
+      var widthPct = Math.max(0.3, (clippedEnd - clippedStart) / span * 100);
       var bar = document.createElement("div");
       bar.className = "downtime-bar";
       bar.style.left = leftPct + "%";
@@ -560,7 +574,7 @@
       downtimeTrackEl.appendChild(bar);
 
       if (!byReason[displayLabel]) byReason[displayLabel] = { color: color, duration: 0 };
-      byReason[displayLabel].duration += seg.duration_s;
+      byReason[displayLabel].duration += visibleDurationS;
     });
 
     if (downtimeLegendEl) {
@@ -577,7 +591,7 @@
         });
     }
 
-    downtimeSummaryEl.textContent = result.segments.length + " prostojů, celkem " + fmtDuration(totalDown);
+    downtimeSummaryEl.textContent = segments.length + " prostojů, celkem " + fmtDuration(totalDown);
   }
 
   function loadDowntimes() {
@@ -588,7 +602,10 @@
       "&since=" + encodeURIComponent(win.since) +
       "&until=" + encodeURIComponent(win.until)
     )
-      .then(function (result) { renderDowntimes(result); })
+      .then(function (result) {
+        lastDowntimeResult = result;
+        renderDowntimesForRange(new Date(result.since).getTime(), new Date(result.until).getTime());
+      })
       .catch(function () {
         if (downtimeSummaryEl) downtimeSummaryEl.textContent = "Chyba načtení";
       });
@@ -654,6 +671,9 @@
 
   chartResetBtn.addEventListener("click", function () {
     initChart();
+    if (lastDowntimeResult) {
+      renderDowntimesForRange(new Date(lastDowntimeResult.since).getTime(), new Date(lastDowntimeResult.until).getTime());
+    }
   });
 
   rangePresetsEl.addEventListener("click", function (evt) {
