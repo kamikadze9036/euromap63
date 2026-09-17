@@ -35,6 +35,7 @@
   var rangeApplyBtn = document.getElementById("rangeApply");
   var downtimeTrackEl = document.getElementById("downtimeTrack");
   var downtimeSummaryEl = document.getElementById("downtimeSummary");
+  var downtimeLegendEl = document.getElementById("downtimeLegend");
 
   var paramDefs = {};
   var lastCycles = [];
@@ -94,6 +95,18 @@
     if (h > 0) return h + " h " + m + " min";
     if (m > 0) return m + " min " + s + " s";
     return s + " s";
+  }
+
+  // Kategoricka paleta pro duvody prostoju (8 fixnich slotu, viz style.css
+  // --series-1..8). Barva se odvozuje z reason_code hashem, ne poradim
+  // vyskytu v aktualnim okne - stejny duvod tak ma vzdy stejnou barvu
+  // bez ohledu na to, jake dalsi duvody se zrovna zobrazuji.
+  var UNKNOWN_REASON_COLOR = "var(--muted)";
+
+  function downtimeColor(reasonCode) {
+    if (reasonCode === null || reasonCode === undefined) return UNKNOWN_REASON_COLOR;
+    var slot = ((reasonCode % 8) + 8) % 8;
+    return "var(--series-" + (slot + 1) + ")";
   }
 
   function updateStateBadge(m) {
@@ -478,6 +491,7 @@
   function renderDowntimes(result) {
     if (!downtimeTrackEl) return;
     downtimeTrackEl.innerHTML = "";
+    if (downtimeLegendEl) downtimeLegendEl.innerHTML = "";
     var minT = new Date(result.since).getTime();
     var maxT = new Date(result.until).getTime();
     var span = maxT - minT || 1;
@@ -488,8 +502,13 @@
     }
 
     var totalDown = 0;
+    var byReason = {}; // reason label -> { color, duration }
+
     result.segments.forEach(function (seg) {
       totalDown += seg.duration_s;
+      var color = downtimeColor(seg.reason_code);
+      var label = seg.reason || "Neznámý důvod";
+
       var startT = new Date(seg.start).getTime();
       var endT = new Date(seg.end).getTime();
       var leftPct = Math.max(0, (startT - minT) / span * 100);
@@ -498,12 +517,31 @@
       bar.className = "downtime-bar";
       bar.style.left = leftPct + "%";
       bar.style.width = widthPct + "%";
+      bar.style.background = color;
       bar.title =
-        (seg.reason || "Neznámý důvod") + "\n" +
+        label + "\n" +
         new Date(seg.start).toLocaleString("cs-CZ") + " – " + new Date(seg.end).toLocaleString("cs-CZ") + "\n" +
         "Délka: " + fmtDuration(seg.duration_s);
       downtimeTrackEl.appendChild(bar);
+
+      if (!byReason[label]) byReason[label] = { color: color, duration: 0 };
+      byReason[label].duration += seg.duration_s;
     });
+
+    if (downtimeLegendEl) {
+      Object.keys(byReason).sort(function (a, b) { return byReason[b].duration - byReason[a].duration; })
+        .forEach(function (label) {
+          var info = byReason[label];
+          var item = document.createElement("span");
+          item.className = "downtime-legend__item";
+          item.innerHTML =
+            '<span class="downtime-legend__swatch" style="background:' + info.color + '"></span>' +
+            escapeHtml(label) +
+            ' <span class="downtime-legend__duration">(' + fmtDuration(info.duration) + ')</span>';
+          downtimeLegendEl.appendChild(item);
+        });
+    }
+
     downtimeSummaryEl.textContent = result.segments.length + " prostojů, celkem " + fmtDuration(totalDown);
   }
 

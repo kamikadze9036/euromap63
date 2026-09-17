@@ -8,6 +8,16 @@
   --ok: #1f9d55;
   --warn: #e0a800;
   --err: #d64545;
+  /* Kategoricka paleta pro duvody prostoju (fixni poradi, validovano
+     scripts/validate_palette.js - CVD/kontrast OK v obou rezimech). */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -18,6 +28,14 @@
     --muted: #9aa1a9;
     --border: #2b2f36;
     --accent: #5b8bf7;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
   }
 }
 
@@ -299,13 +317,37 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 }
 .downtime-bar {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  background: var(--warn);
+  top: 2px;
+  bottom: 2px;
+  background: var(--muted);
   cursor: help;
   min-width: 2px;
+  border-radius: 3px;
+  outline: 2px solid var(--surface);
+  outline-offset: -1px;
 }
-.downtime-bar:hover { background: var(--err); }
+.downtime-bar:hover { filter: brightness(1.2); }
+
+.downtime-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 8px;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.downtime-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.downtime-legend__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.downtime-legend__duration { color: var(--muted); }
 .chart-container .uplot { width: 100% !important; }
 .chart-container .u-wrap { cursor: grab; }
 .chart-container .u-wrap:active { cursor: grabbing; }
