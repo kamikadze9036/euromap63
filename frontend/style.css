@@ -95,6 +95,12 @@ main {
     grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
     align-items: start;
   }
+  /* Sekce s vyberem parametru + grafy je prilis siroka na to, aby dobre
+     obstala vedle tabulky vsech parametru ve druhem sloupci - roztahne
+     se pres celou sirku, tabulka jde pod ni. */
+  .chart-section--wide {
+    grid-column: 1 / -1;
+  }
 }
 
 .machine-info {
@@ -296,7 +302,91 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   cursor: pointer;
 }
 
-.chart-container { width: 100%; overflow: hidden; }
+.pair-toggle {
+  font-size: 0.8rem;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pair-toggle input { accent-color: var(--accent); cursor: pointer; }
+
+.picker-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 780px) {
+  .picker-layout { grid-template-columns: 1fr; }
+}
+
+.picker {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  max-height: 640px;
+  overflow-y: auto;
+  align-self: start;
+}
+.picker-cat { padding: 8px 8px 2px; }
+.picker-cat__title {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 600;
+  margin: 4px 0;
+}
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.picker-row:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.picker-row input { accent-color: var(--accent); cursor: pointer; flex-shrink: 0; }
+.picker-row__swatch { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--border); }
+.picker-row.checked .picker-row__swatch { background: var(--row-color, var(--accent)); }
+.picker-row__label { flex: 1; font-size: 0.78rem; line-height: 1.25; }
+.picker-row__value {
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.charts { display: flex; flex-direction: column; gap: 10px; }
+.chart-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px 4px;
+}
+.chart-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 2px;
+  font-size: 0.82rem;
+}
+.chart-card__title { font-weight: 600; }
+.chart-card__now { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart-card__now b { color: var(--text); }
+.chart-card__mini { height: 140px; }
+.chart-empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
 
 .downtime-section { margin-top: 14px; }
 .downtime-header {
@@ -374,9 +464,9 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   flex-shrink: 0;
 }
 .downtime-legend__duration { color: var(--muted); }
-.chart-container .uplot { width: 100% !important; }
-.chart-container .u-wrap { cursor: grab; }
-.chart-container .u-wrap:active { cursor: grabbing; }
+.chart-card__mini .uplot { width: 100% !important; }
+.chart-card__mini .u-wrap { cursor: grab; }
+.chart-card__mini .u-wrap:active { cursor: grabbing; }
 
 /* uPlot vykresluje vlastni popisky/legendu barvou z inherited "color" -
    nastavime ji dle tematu, protoze knihovni CSS ma jen cerne/sede default. */

@@ -23,10 +23,11 @@
   var paramsTbody = document.querySelector("#paramsTable tbody");
   var paramFilterInput = document.getElementById("paramFilter");
   var paramFilterText = "";
-  var chartTitleEl = document.getElementById("chart-title");
   var chartLimitInput = document.getElementById("chart-limit-input");
   var chartResetBtn = document.getElementById("chart-reset-zoom");
-  var chartContainer = document.getElementById("cycleChartContainer");
+  var pickerEl = document.getElementById("picker");
+  var chartsEl = document.getElementById("charts");
+  var pairToggleEl = document.getElementById("pairToggle");
   var rangePresetsEl = document.getElementById("rangePresets");
   var rangeCustomEl = document.getElementById("rangeCustom");
   var rangeCountWrapEl = document.getElementById("rangeCountWrap");
@@ -43,7 +44,40 @@
   var lastCycles = [];
   var chartLimit = parseInt(chartLimitInput.value, 10) || 100;
   var ws = null;
-  var chart = null;
+
+  // Vice grafu vedle sebe (small multiples), jeden na kazdy zaskrtnuty
+  // parametr - misto puvodniho jednoho grafu s jednim vybranym parametrem.
+  // key -> { uplot, container }
+  var charts = {};
+  var selectedKeys = []; // poradi zaskrtnuti = poradi prideleni barvy
+  var colorOf = {};
+  var SERIES_VARS = ["--series-1", "--series-2", "--series-3", "--series-4", "--series-5", "--series-6", "--series-7", "--series-8"];
+
+  // Parovani "zmereno" -> "zadano" pro zony, kde existuje obojí zvlast -
+  // zadana hodnota se automaticky dokresli do stejneho grafu slabsi
+  // carkovanou carou, aniz by si ji uzivatel musel zvlast zaskrtavat.
+  // Pokryva jen zivé/uzitecne zony (viz 05_seed_parameters_tmpact_fix a
+  // 04_seed_parameters_barrel_extruder_hoppers) - mrtve zony nastroje
+  // parovani nemaji, protoze cela rodina je momentalne mimo provoz.
+  var PAIRS = {
+    "@020Inj1T1.TmpAct": "SetTmpBrlZn[1,1]",
+    "@020Inj1T2.TmpAct": "SetTmpBrlZn[1,2]",
+    "@020Inj1T3.TmpAct": "SetTmpBrlZn[1,3]",
+    "@020Inj1T4.TmpAct": "SetTmpBrlZn[1,4]",
+    "@020Inj1T5.TmpAct": "SetTmpBrlZn[1,5]",
+    "@020Inj1T11.TmpAct": "SetTmpBrlZn[1,11]",
+    "@020Inj1T12.TmpAct": "SetTmpBrlZn[1,12]",
+    "@080Ext1TmpGear1\\CycDataTmpZone\\CycVal.PdeValue": "@080Ext1TmpGear1.TmpSet",
+    "@080Ext1TmpBush1\\CycDataTmpZone\\CycVal.PdeValue": "@080Ext1TmpBush1.TmpSet",
+    "@080Ext1TmpBar1.TmpAct": "@080Ext1TmpBar1.TmpSet",
+    "@080Ext1TmpBar2.TmpAct": "@080Ext1TmpBar2.TmpSet",
+    "@080Ext1TmpBar3.TmpAct": "@080Ext1TmpBar3.TmpSet",
+    "@080Ext1TmpBar4.TmpAct": "@080Ext1TmpBar4.TmpSet",
+    "@080Ext1TmpBar5.TmpAct": "@080Ext1TmpBar5.TmpSet",
+    "@080Ext1TmpBar6.TmpAct": "@080Ext1TmpBar6.TmpSet",
+    "@080Ext1TmpBar7.TmpAct": "@080Ext1TmpBar7.TmpSet",
+  };
+  var showPairs = pairToggleEl ? pairToggleEl.checked : true;
 
   // Rezim grafu: "count" = poslednich N cyklu (puvodni chovani), "range" =
   // casove okno (presety 15m..7d nebo vlastni od-do), posilane na API jako
@@ -67,10 +101,9 @@
 
   if (pageTitleEl) pageTitleEl.textContent = "Euromap63 — " + MACHINE;
 
-  // Vychozi zobrazeny parametr v grafu - doba cyklu (stejna data jako
-  // cycle_time_s, ale pristupuje se k ni pres params jako ke kterekoliv
-  // jine hodnote, aby byl vyber jednotny).
-  var selected = { key: "ActTimCyc", label: "Doba cyklu", unit: "s" };
+  // Vychozi zaskrtnute parametry, aby stranka po nacteni rovnou neco
+  // ukazovala (misto prazdneho pickeru bez jedineho grafu).
+  var DEFAULT_SELECTED = ["ActTimCyc", "@020Inj1T1.TmpAct", "@080ETGraviPseudoDos.MassPerc"];
 
   function setStatus(kind, text) {
     statusEl.className = "status status--" + kind;
@@ -187,28 +220,10 @@
     return Number.isNaN(v) ? null : v;
   }
 
-  function updateChartTitle() {
-    var unitSuffix = selected.unit ? " (" + selected.unit + ")" : "";
-    chartTitleEl.textContent = selected.label + unitSuffix;
-  }
-
-  function selectParam(key) {
-    selected = { key: key, label: paramLabel(key), unit: paramUnit(key) };
-    updateChartTitle();
-    highlightSelectedRow();
-    initChart();
-  }
-
-  function highlightSelectedRow() {
-    Array.prototype.forEach.call(paramsTbody.rows, function (tr) {
-      tr.classList.toggle("row--selected", tr.dataset.param === selected.key);
-    });
-  }
-
   // ── uPlot graf s zoomem (kolecko mysi) a panem (tazeni) ──────────────
   // Standardni recept z uPlot demos (zoom-wheel.html), upraveno pro
   // jedinou X osu s casem. Dvojklik resetuje zoom na plny rozsah dat.
-  function wheelZoomPlugin(factor, onRangeChange) {
+  function wheelZoomPlugin(factor, chartKey, onRangeChange) {
     factor = factor || 0.75;
     var xMin, xMax, xRange;
 
@@ -272,7 +287,7 @@
           });
         },
         setScale: function (u, key) {
-          if (key === "x" && onRangeChange) onRangeChange(u.scales.x.min, u.scales.x.max);
+          if (key === "x" && onRangeChange) onRangeChange(u.scales.x.min, u.scales.x.max, chartKey);
         },
       },
     };
@@ -283,66 +298,231 @@
     return v || fallback;
   }
 
-  function buildChartData(rows) {
+  // Kdyz nekdo zazoomuje/posune jeden graf, promitne se stejny rozsah do
+  // vsech ostatnich (uPlot instance na sobe jinak navzajem nevi) a do
+  // pruhu prostoju. Bez podminky by se pri kazdem setScale zacaly grafy
+  // volat navzajem donekonecna - setScale je u uPlot no-op (nevyvola
+  // znovu hook), kdyz se nastavi uz aktivni hodnota, takze se to samo
+  // zastavi po jednom kole.
+  function handleRangeChange(minSec, maxSec, sourceKey) {
+    Object.keys(charts).forEach(function (k) {
+      if (k === sourceKey) return;
+      var u = charts[k].uplot;
+      if (u.scales.x.min !== minSec || u.scales.x.max !== maxSec) {
+        u.setScale("x", { min: minSec, max: maxSec });
+      }
+    });
+    renderDowntimesForRange(minSec * 1000, maxSec * 1000);
+  }
+
+  function buildSeriesData(rows, key) {
     var xs = [], ys = [];
     rows.forEach(function (r) {
-      var v = getValue(r, selected.key);
-      if (v === null) return;
+      var v = getValue(r, key);
       xs.push(new Date(r.time).getTime() / 1000);
-      ys.push(v);
+      ys.push(v === null ? null : v);
     });
     return [xs, ys];
   }
 
-  function initChart() {
-    var data = buildChartData(lastCycles);
+  function assignColor(key) {
+    if (colorOf[key]) return colorOf[key];
+    var used = Object.keys(colorOf).length;
+    colorOf[key] = "var(" + SERIES_VARS[used % SERIES_VARS.length] + ")";
+    return colorOf[key];
+  }
+
+  function latestValueText(key) {
+    if (!lastCycles.length) return "–";
+    var v = getValue(lastCycles[lastCycles.length - 1], key);
+    if (v === null) return "–";
+    var unit = paramUnit(key);
+    var txt = Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2);
+    return txt + (unit ? " " + unit : "");
+  }
+
+  function buildChartOpts(key, width) {
     var accent = themeColor("--accent", "#2f6fed");
     var muted = themeColor("--muted", "#666");
     var border = themeColor("--border", "#ddd");
-    var text = themeColor("--text", "#1b1f24");
+    var color = colorOf[key].replace("var(", "").replace(")", "");
+    color = themeColor(color, accent);
 
-    var opts = {
-      width: chartContainer.clientWidth || 900,
-      height: 420,
-      plugins: [wheelZoomPlugin(0.75, function (minSec, maxSec) {
-        renderDowntimesForRange(minSec * 1000, maxSec * 1000);
-      })],
+    var series = [{}, { label: paramLabel(key), stroke: color, width: 2, points: { show: lastCycles.length <= 150, size: 4, stroke: color, fill: color } }];
+    var pairKey = PAIRS[key];
+    var hasPair = !!(pairKey && paramDefs[pairKey]);
+    if (hasPair) {
+      series.push({
+        label: paramLabel(pairKey) + " (zadáno)",
+        stroke: muted,
+        width: 1.25,
+        dash: [4, 3],
+        points: { show: false },
+        show: showPairs,
+      });
+    }
+
+    return {
+      width: width || 900,
+      height: 160,
+      plugins: [wheelZoomPlugin(0.75, key, handleRangeChange)],
       cursor: { drag: { x: false, y: false } },
       scales: { x: { time: true } },
-      series: [
-        {},
-        {
-          label: selected.label,
-          stroke: accent,
-          width: 2,
-          points: { show: data[0].length <= 150, size: 4, stroke: accent, fill: accent },
-        },
-      ],
+      series: series,
       axes: [
         { stroke: muted, grid: { stroke: border, width: 1 }, ticks: { stroke: border } },
-        {
-          stroke: muted,
-          grid: { stroke: border, width: 1 },
-          ticks: { stroke: border },
-          label: selected.unit || "",
-          labelFont: "11px sans-serif",
-        },
+        { stroke: muted, grid: { stroke: border, width: 1 }, ticks: { stroke: border }, size: 52 },
       ],
       legend: { show: true },
     };
-
-    if (chart) chart.destroy();
-    chartContainer.innerHTML = "";
-    chart = new uPlot(opts, data, chartContainer);
-
-    // uPlot generuje vlastni text barvou z CSS - u tmaveho rezimu je
-    // potreba nastavit barvu popisku/legendy explicitne.
-    chartContainer.style.color = text;
   }
 
-  function updateChartData() {
-    if (!chart) { initChart(); return; }
-    chart.setData(buildChartData(lastCycles));
+  function buildChartDataFor(key) {
+    var base = buildSeriesData(lastCycles, key);
+    var pairKey = PAIRS[key];
+    if (pairKey && paramDefs[pairKey]) {
+      var pairSeries = buildSeriesData(lastCycles, pairKey);
+      return [base[0], base[1], pairSeries[1]];
+    }
+    return base;
+  }
+
+  function createChartCard(key) {
+    var card = document.createElement("div");
+    card.className = "chart-card";
+    card.dataset.key = key;
+    var head = document.createElement("div");
+    head.className = "chart-card__head";
+    head.innerHTML =
+      '<span class="chart-card__title">' + escapeHtml(paramLabel(key)) + '</span>' +
+      '<span class="chart-card__now">aktuálně <b>' + latestValueText(key) + '</b></span>';
+    var miniEl = document.createElement("div");
+    miniEl.className = "chart-card__mini";
+    card.appendChild(head);
+    card.appendChild(miniEl);
+    chartsEl.appendChild(card);
+
+    var text = themeColor("--text", "#1b1f24");
+    var u = new uPlot(buildChartOpts(key, miniEl.clientWidth || 900), buildChartDataFor(key), miniEl);
+    miniEl.style.color = text;
+
+    // Novy graf se pripoji na aktualni zoom, ktery uz maji ostatni,
+    // aby se pri pridani dalsiho parametru neresetoval pohled vsem.
+    var existingKey = Object.keys(charts)[0];
+    if (existingKey) {
+      var ref = charts[existingKey].uplot;
+      u.setScale("x", { min: ref.scales.x.min, max: ref.scales.x.max });
+    }
+
+    charts[key] = { uplot: u, container: card, mini: miniEl, headNow: head.querySelector(".chart-card__now b") };
+  }
+
+  function destroyChartCard(key) {
+    var c = charts[key];
+    if (!c) return;
+    c.uplot.destroy();
+    c.container.remove();
+    delete charts[key];
+  }
+
+  function renderChartsEmptyState() {
+    if (Object.keys(charts).length) return;
+    chartsEl.innerHTML = '<div class="chart-empty">Zaškrtni parametry vlevo — grafy se objeví tady.</div>';
+  }
+
+  function clearChartsEmptyState() {
+    var empty = chartsEl.querySelector(".chart-empty");
+    if (empty) empty.remove();
+  }
+
+  // Kompletni prestavba vsech grafu (zmena okna, reset zoomu) - jednodussi
+  // a spolehlivejsi nez upravovat data uz existujicich instanci, protoze
+  // se zaroven vyresetuje i jejich zoom na novy plny rozsah.
+  function rebuildAllCharts() {
+    Object.keys(charts).forEach(destroyChartCard);
+    chartsEl.innerHTML = "";
+    if (!selectedKeys.length) { renderChartsEmptyState(); return; }
+    selectedKeys.forEach(createChartCard);
+  }
+
+  function updateChartsData() {
+    if (!selectedKeys.length) return;
+    selectedKeys.forEach(function (key) {
+      var c = charts[key];
+      if (!c) return;
+      c.uplot.setData(buildChartDataFor(key));
+      if (c.headNow) c.headNow.textContent = latestValueText(key);
+    });
+  }
+
+  // ── zaskrtavaci panel parametru (seskupeny podle kategorie) ──────────
+  function buildPicker() {
+    var byCat = {};
+    Object.keys(paramDefs).forEach(function (key) {
+      var def = paramDefs[key];
+      if (!def.category) return; // bez kategorie = jen do surove tabulky, ne do pickeru
+      (byCat[def.category] = byCat[def.category] || []).push(key);
+    });
+
+    pickerEl.innerHTML = "";
+    Object.keys(byCat).forEach(function (cat) {
+      var block = document.createElement("div");
+      block.className = "picker-cat";
+      block.innerHTML = '<div class="picker-cat__title">' + escapeHtml(cat) + '</div>';
+      byCat[cat].forEach(function (key) {
+        var row = document.createElement("label");
+        row.className = "picker-row";
+        row.innerHTML =
+          '<input type="checkbox" data-key="' + escapeHtml(key) + '">' +
+          '<span class="picker-row__swatch"></span>' +
+          '<span class="picker-row__label">' + escapeHtml(paramDefs[key].label) + '</span>' +
+          '<span class="picker-row__value" data-now="' + escapeHtml(key) + '">' + latestValueText(key) + '</span>';
+        block.appendChild(row);
+      });
+      pickerEl.appendChild(block);
+    });
+
+    pickerEl.querySelectorAll('input[type="checkbox"]').forEach(function (input) {
+      input.addEventListener("change", function () {
+        var key = input.dataset.key;
+        var row = input.closest(".picker-row");
+        if (input.checked) {
+          assignColor(key);
+          selectedKeys.push(key);
+          row.classList.add("checked");
+          row.style.setProperty("--row-color", colorOf[key]);
+          clearChartsEmptyState();
+          createChartCard(key);
+        } else {
+          selectedKeys = selectedKeys.filter(function (k) { return k !== key; });
+          row.classList.remove("checked");
+          destroyChartCard(key);
+          renderChartsEmptyState();
+        }
+      });
+    });
+
+    // Vychozi vyber pri prvnim naplneni pickeru.
+    DEFAULT_SELECTED.forEach(function (key) {
+      var input = pickerEl.querySelector('input[data-key="' + key.replace(/"/g, '\\"') + '"]');
+      if (input && !input.checked) input.click();
+    });
+  }
+
+  function refreshPickerValues() {
+    pickerEl.querySelectorAll("[data-now]").forEach(function (el) {
+      el.textContent = latestValueText(el.dataset.now);
+    });
+  }
+
+  if (pairToggleEl) {
+    pairToggleEl.addEventListener("change", function () {
+      showPairs = pairToggleEl.checked;
+      Object.keys(charts).forEach(function (key) {
+        if (!PAIRS[key]) return;
+        charts[key].uplot.setSeries(2, { show: showPairs });
+      });
+    });
   }
 
   function loadParamDefs() {
@@ -350,9 +530,9 @@
       .then(function (rows) {
         paramDefs = {};
         rows.forEach(function (r) {
-          paramDefs[r.param_name] = { label: r.param_label, unit: r.param_unit };
+          paramDefs[r.param_name] = { label: r.param_label, unit: r.param_unit, category: r.param_category };
         });
-        updateChartTitle();
+        buildPicker();
       })
       .catch(function () {});
   }
@@ -363,8 +543,6 @@
       var def = paramDefs[key] || {};
       var tr = document.createElement("tr");
       tr.dataset.param = key;
-      tr.title = "Zobrazit historii v grafu";
-      tr.addEventListener("click", function () { selectParam(key); });
 
       var tdKey = document.createElement("td");
       tdKey.className = "truncate";
@@ -389,8 +567,8 @@
       tr.appendChild(tdUnit);
       paramsTbody.appendChild(tr);
     });
-    highlightSelectedRow();
     applyParamFilter();
+    refreshPickerValues();
   }
 
   function applyParamFilter() {
@@ -438,7 +616,7 @@
         lastCycles.shift();
       }
     }
-    updateChartData();
+    updateChartsData();
   }
 
   function loadInitial() {
@@ -490,7 +668,7 @@
     fetchJson(url)
       .then(function (rows) {
         lastCycles = rows;
-        initChart();
+        rebuildAllCharts();
         loadDowntimes();
       })
       .catch(function () {});
@@ -529,8 +707,11 @@
   // zoomu, kdy se zmeni rozsah hodnot) sloupce prostoju nesedely na sirku
   // s grafem.
   function syncDowntimePlotArea() {
-    if (!chart || !chart.over || !downtimePlotAreaEl || !downtimeTrackEl) return;
-    var overRect = chart.over.getBoundingClientRect();
+    var anyKey = Object.keys(charts)[0];
+    if (!anyKey || !downtimePlotAreaEl || !downtimeTrackEl) return;
+    var refChart = charts[anyKey].uplot;
+    if (!refChart || !refChart.over) return;
+    var overRect = refChart.over.getBoundingClientRect();
     var trackRect = downtimeTrackEl.getBoundingClientRect();
     downtimePlotAreaEl.style.left = (overRect.left - trackRect.left) + "px";
     downtimePlotAreaEl.style.width = overRect.width + "px";
@@ -685,7 +866,7 @@
   });
 
   chartResetBtn.addEventListener("click", function () {
-    initChart();
+    rebuildAllCharts();
     if (lastDowntimeResult) {
       renderDowntimesForRange(new Date(lastDowntimeResult.since).getTime(), new Date(lastDowntimeResult.until).getTime());
     }
@@ -706,16 +887,20 @@
   });
 
   window.addEventListener("resize", function () {
-    if (chart) chart.setSize({ width: chartContainer.clientWidth || 900, height: 420 });
-    if (chart && lastDowntimeResult) {
-      renderDowntimesForRange(chart.scales.x.min * 1000, chart.scales.x.max * 1000);
+    var anyKey = Object.keys(charts)[0];
+    if (!anyKey) return;
+    Object.keys(charts).forEach(function (key) {
+      var c = charts[key];
+      c.uplot.setSize({ width: c.mini.clientWidth || 900, height: 160 });
+    });
+    if (lastDowntimeResult) {
+      var refScale = charts[anyKey].uplot.scales.x;
+      renderDowntimesForRange(refScale.min * 1000, refScale.max * 1000);
     }
   });
 
   // Vychozi vyber: 24h (odpovida tlacitku s "active" tridou primo v HTML)
   rangeSince = new Date(Date.now() - RANGE_MS["24h"]).toISOString();
-
-  updateChartTitle();
   loadMachineInfo();
   loadParamDefs().then(loadInitial);
   pollStats();

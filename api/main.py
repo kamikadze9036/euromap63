@@ -87,7 +87,7 @@ def list_machines():
 def list_parameters(machine: str):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT param_name, param_type, param_unit, param_label FROM machine_parameters "
+            "SELECT param_name, param_type, param_unit, param_label, param_category FROM machine_parameters "
             "WHERE machine_code=%s ORDER BY param_name",
             (machine,),
         )
