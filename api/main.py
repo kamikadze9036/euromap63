@@ -708,50 +708,45 @@ async def on_startup():
 
 _cavity_scrap_cache = {}  # (machine_code, order_ref) -> {"data": [...], "ts": float}
 CAVITY_SCRAP_CACHE_TTL_SEC = 15
-CAVITY_SCRAP_ROW_LIMIT = 1000
 
 
-def _query_cavity_scrap(mac_refmac, order_ref):
-    """Zmetkovitost po kavitach/produktech pro aktualni zakazku (OF) na
-    danem stroji. Kazda kavita vicekavitove formy ma v Cyclades vlastni
-    PROD_REFPROD (viz komentar u /api/cycles/by-package - stitky/deklarace
-    bezi ve vice paralelnich radach pod jednou zakazkou, jedna rada na
-    kavitu/produkt). BILAN_SAISIE_EQUIPE.BILPSEQU_QTEFAB/QTEREBUT jsou
-    kumulativni soucty za aktualni smenu (kazda dalsi deklarace uz
-    obsahuje predchozi mnozstvi) - bereme tedy jen NEJNOVEJSI radek na
-    kazdy produkt, ne soucet vsech radku (to by zmetkovitost umocnilo).
-    Procento pocitame jako QTEREBUT/QTEFAB (stejna definice jako Cycladi
-    vlastni dbo.TauxRebuts - QteFabriquee jako jmenovatel, ne QteBonne+
-    QteRebut, protoze se soucet nerovna QteFabriquee - viz i jine kategorie
-    mnozstvi, napr. cekajici na rozhodnuti).
+def _query_cavity_scrap(order_ref):
+    """Zmetkovitost po kavitach/produktech pro aktualni zakazku (OF).
+    Kazda kavita vicekavitove formy ma v Cyclades vlastni PROD_REFPROD
+    (viz komentar u /api/cycles/by-package - stitky bezi ve vice
+    paralelnich radach pod jednou zakazkou, jedna rada na kavitu/produkt).
+
+    Zdroj je LIGOF (radek OF x produkt) - Cyclades sam na nem drzi zive,
+    kumulativni mnozstvi za CELOU zakazku (LIGOF_QTEBONNE/LIGOF_QTEREBUT),
+    prubezne aktualizovane pri kazde smenove deklaraci. To je presnejsi a
+    jednodussi nez pocitat z BILAN_SAISIE_EQUIPE (tam by bylo nutne brat jen
+    nejnovejsi radek na produkt v ramci aktualni smeny, cimz by se ztratila
+    historie z predchozich smen te same zakazky). LIGOF_TXTHEOREBUT je
+    Cycladi vlastni cilova/teoreticka zmetkovitost pro srovnani.
+    Neni vazano na machine_code/mac_refmac - OF_REFOF uz je dost specificky.
     """
-    if not (pymssql and CYCLADES_DB_HOST and mac_refmac and order_ref):
+    if not (pymssql and CYCLADES_DB_HOST and order_ref):
         return []
     rows = _query_cyclades(
         "SUIVPRO",
-        "SELECT TOP %d PROD_REFPROD, BILPSEQU_QTEFAB, BILPSEQU_QTEBONNE, BILPSEQU_QTEREBUT, BILPSEQU_DATESAISIE "
-        "FROM BILAN_SAISIE_EQUIPE WHERE BILPSEQU_REFMAC=%%s AND OF_REFOF=%%s "
-        "ORDER BY BILPSEQU_DATESAISIE DESC" % CAVITY_SCRAP_ROW_LIMIT,
-        (mac_refmac, order_ref),
+        "SELECT PROD_REFPROD, PROD_LIBPROD, LIGOF_RANGPRO, LIGOF_QTEBONNE, LIGOF_QTEREBUT, LIGOF_TXTHEOREBUT "
+        "FROM LIGOF WHERE OF_REFOF=%s ORDER BY LIGOF_RANGPRO",
+        (order_ref,),
     )
-    latest_by_product = {}
-    for r in rows:
-        p = r["PROD_REFPROD"]
-        if p not in latest_by_product:
-            latest_by_product[p] = r
-
     cavities = []
-    for product, r in latest_by_product.items():
-        qty_fab = float(r["BILPSEQU_QTEFAB"] or 0)
-        qty_reject = float(r["BILPSEQU_QTEREBUT"] or 0)
-        pct = (qty_reject / qty_fab * 100) if qty_fab > 0 else None
+    for r in rows:
+        qty_good = float(r["LIGOF_QTEBONNE"] or 0)
+        qty_reject = float(r["LIGOF_QTEREBUT"] or 0)
+        qty_total = qty_good + qty_reject
+        pct = (qty_reject / qty_total * 100) if qty_total > 0 else None
         cavities.append({
-            "product": product,
-            "qty_fab": qty_fab,
-            "qty_good": float(r["BILPSEQU_QTEBONNE"] or 0),
+            "product": r["PROD_REFPROD"],
+            "label": r["PROD_LIBPROD"],
+            "cavity_no": r["LIGOF_RANGPRO"],
+            "qty_good": qty_good,
             "qty_reject": qty_reject,
             "reject_pct": pct,
-            "declared_at": _cyclades_local(r["BILPSEQU_DATESAISIE"]),
+            "target_pct": float(r["LIGOF_TXTHEOREBUT"]) if r["LIGOF_TXTHEOREBUT"] is not None else None,
         })
     cavities.sort(key=lambda c: (c["reject_pct"] is None, -(c["reject_pct"] or 0)))
     return cavities
@@ -774,7 +769,7 @@ def machine_cavity_scrap(machine: str):
     if cached and now - cached["ts"] < CAVITY_SCRAP_CACHE_TTL_SEC:
         cavities = cached["data"]
     else:
-        cavities = _query_cavity_scrap(mac_refmac, order_ref)
+        cavities = _query_cavity_scrap(order_ref)
         if len(_cavity_scrap_cache) > 500:
             _cavity_scrap_cache.clear()
         _cavity_scrap_cache[cache_key] = {"data": cavities, "ts": now}

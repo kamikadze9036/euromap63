@@ -698,11 +698,15 @@
           elWorstCavity.title = "";
           return;
         }
-        elWorstCavity.textContent = data.worst.product + ": " + fmt(data.worst.reject_pct, 1) + " %";
-        if (data.worst.reject_pct >= 10) elWorstCavity.classList.add("card__value--danger");
+        var w = data.worst;
+        elWorstCavity.textContent = (w.label || w.product) + ": " + fmt(w.reject_pct, 1) + " %";
+        if (w.target_pct !== null && w.reject_pct >= w.target_pct) elWorstCavity.classList.add("card__value--danger");
         elWorstCavity.title = (data.cavities || []).map(function (c) {
-          return c.product + ": " + (c.reject_pct === null ? "–" : fmt(c.reject_pct, 1) + " %") +
-            " (zmetek " + c.qty_reject + " / vyrobeno " + c.qty_fab + ")";
+          var line = c.product + " — " + (c.label || "") + ": " +
+            (c.reject_pct === null ? "–" : fmt(c.reject_pct, 1) + " %") +
+            " (zmetek " + c.qty_reject + " / dobrých " + c.qty_good + ")";
+          if (c.target_pct !== null) line += ", cíl " + fmt(c.target_pct, 1) + " %";
+          return line;
         }).join("\n");
       })
       .catch(function () {});
