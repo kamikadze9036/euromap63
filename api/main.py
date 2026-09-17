@@ -7,7 +7,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -269,7 +269,7 @@ def downtimes(machine: str, since: str, until: str = None, min_gap_s: float = Qu
 
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT time, cycle_count FROM cycles WHERE machine_code=%s AND time >= %s AND time <= %s "
+            "SELECT time, cycle_count, cycle_time_s FROM cycles WHERE machine_code=%s AND time >= %s AND time <= %s "
             "ORDER BY cycle_count",
             (machine, since_dt, until_dt),
         )
@@ -279,10 +279,19 @@ def downtimes(machine: str, since: str, until: str = None, min_gap_s: float = Qu
     for prev, cur_row in zip(rows, rows[1:]):
         gap = (cur_row["time"] - prev["time"]).total_seconds()
         if gap >= min_gap_s:
+            # "time" je okamzik, kdy navazujici cyklus DOBEHL (zapsal se do
+            # REPORTS.DAT) - stroj tedy uz beh nekolik sekund pred timhle
+            # casem, presne cycle_time_s toho cyklu. Bez korekce by konec
+            # prostoje byl posunuty o celou dobu trvani navazujiciho cyklu
+            # (u dlouhych/atypickych cyklu klidne desitky-stovky sekund).
+            resume_cycle_s = float(cur_row["cycle_time_s"] or 0)
+            end_dt = cur_row["time"] - timedelta(seconds=resume_cycle_s)
+            if end_dt <= prev["time"]:
+                end_dt = cur_row["time"]
             segments.append({
                 "start": prev["time"],
-                "end": cur_row["time"],
-                "duration_s": gap,
+                "end": end_dt,
+                "duration_s": (end_dt - prev["time"]).total_seconds(),
                 "reason": None,
                 "reason_code": None,
             })
