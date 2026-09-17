@@ -152,7 +152,7 @@ INSERT INTO machine_parameters (machine_code, param_name, param_type, param_unit
     ('KM-MC5-01', '@021MldHtg1T71.TmpSet', 'N', '°C', 'Zóna nástroje 71 (zadáno)'),
     ('KM-MC5-01', '@021MldHtg1T71.TmpAct', 'N', '°C', 'Zóna nástroje 71 (měřeno)'),
     ('KM-MC5-01', '@021MldHtg1T72.TmpSet', 'N', '°C', 'Zóna nástroje 72 (zadáno)'),
-    ('KM-MC5-01', '@021MldHtg1T72.TmpAct', 'N', '°C', 'Zóna nástroje 72 (měřeno)');
+    ('KM-MC5-01', '@021MldHtg1T72.TmpAct', 'N', '°C', 'Zóna nástroje 72 (měřeno)')
 ON CONFLICT (machine_code, param_name) DO UPDATE
     SET param_type = EXCLUDED.param_type,
         param_unit = EXCLUDED.param_unit,
