@@ -68,4 +68,6 @@ ActTmpOil
 ActPrsXfrSpec[1]
 ActPrsHldSpecMax[1]
 ActPrsMachSpecMax
+@080ETGraviDos2.MassPerc
+@080ETGraviPseudoDos.MassPerc
 ;
