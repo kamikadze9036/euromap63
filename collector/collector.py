@@ -225,6 +225,22 @@ def is_data_line(line):
         return False
 
 
+def merge_wrapped_lines(lines):
+    """Machine wraps any physical line over ~1000 chars onto a
+    continuation line starting with whitespace - a naive is_data_line()
+    check can't tell such a continuation apart from a genuine new row
+    (e.g. " 260,260" starts with a number too), so merge purely on the
+    leading-whitespace signal before any row/column parsing happens.
+    """
+    merged = []
+    for line in lines:
+        if merged and line != line.lstrip():
+            merged[-1] += line.lstrip()
+        else:
+            merged.append(line)
+    return merged
+
+
 def read_new_cycles(conn):
     if not os.path.exists(REPORTS_DAT):
         return 0
@@ -242,18 +258,19 @@ def read_new_cycles(conn):
     if not lines:
         return 0
 
-    # Stroj lame dlouhe radky (pozorovano u hlavicky nad ~1000 znaku) na
-    # vice fyzickych radku, pokracovani zacina mezerou. Slucujeme vsechny
-    # radky od zacatku, dokud nenarazime na prvni skutecny datovy radek
-    # (zacina cislem). Stejny limit by teoreticky mohl casem zasahnout i
-    # datovy radek (dalsi rozsireni PARAMETERS) - zatim nereseno, protoze
-    # data jsou kratsi nez hlavicka.
+    # Stroj lame dlouhe fyzicke radky (pozorovano puvodne u hlavicky nad
+    # ~1000 znaku, po pridani 72 zon temperace formy i u datovych radku)
+    # na vice fyzickych radku, pokracovani zacina mezerou. Sloucime vsechny
+    # pokracovaci radky zpet na predchozi logicky radek driv, nez cokoliv
+    # rozparsujeme - stejne pravidlo plati pro hlavicku i pro data.
+    lines = merge_wrapped_lines(lines)
+
     header_line_count = 0
     header_parts = []
     for i, line in enumerate(lines):
         if i > 0 and is_data_line(line):
             break
-        header_parts.append(line.lstrip() if i > 0 else line)
+        header_parts.append(line)
         header_line_count += 1
     header = split_csv_line("".join(header_parts))
     data_lines = lines[header_line_count:]
