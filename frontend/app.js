@@ -332,13 +332,43 @@
     return colorOf[key];
   }
 
+  function latestRawValue(key) {
+    if (!lastCycles.length) return null;
+    return getValue(lastCycles[lastCycles.length - 1], key);
+  }
+
+  function fmtVal(v) {
+    if (v === null || v === undefined || !isFinite(v)) return "–";
+    return Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2);
+  }
+
   function latestValueText(key) {
-    if (!lastCycles.length) return "–";
-    var v = getValue(lastCycles[lastCycles.length - 1], key);
+    var v = latestRawValue(key);
     if (v === null) return "–";
     var unit = paramUnit(key);
-    var txt = Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2);
-    return txt + (unit ? " " + unit : "");
+    return fmtVal(v) + (unit ? " " + unit : "");
+  }
+
+  // Pro zony s parem zmereno/zadano ukaze rovnou obe cisla vedle sebe +
+  // rozdil - carkovana cara v grafu jde tezko precist na presnou hodnotu,
+  // tohle jde videt na prvni pohled bez odhadovani z grafu.
+  function nowHtmlFor(key) {
+    var pairKey = PAIRS[key];
+    var hasPair = !!(pairKey && paramDefs[pairKey]);
+    if (!hasPair) {
+      return "aktuálně <b>" + latestValueText(key) + "</b>";
+    }
+    var unit = paramUnit(key);
+    var unitSuffix = unit ? " " + escapeHtml(unit) : "";
+    var measured = latestRawValue(key);
+    var target = latestRawValue(pairKey);
+    var deltaTxt = "–";
+    if (measured !== null && target !== null) {
+      var delta = measured - target;
+      deltaTxt = (delta >= 0 ? "+" : "") + delta.toFixed(1);
+    }
+    return "měřeno <b>" + fmtVal(measured) + "</b> / cíl <b>" + fmtVal(target) + "</b>" + unitSuffix +
+      "&nbsp;&nbsp;Δ <b>" + deltaTxt + "</b>";
   }
 
   function buildChartOpts(key, width) {
@@ -395,7 +425,7 @@
     head.className = "chart-card__head";
     head.innerHTML =
       '<span class="chart-card__title">' + escapeHtml(paramLabel(key)) + '</span>' +
-      '<span class="chart-card__now">aktuálně <b>' + latestValueText(key) + '</b></span>';
+      '<span class="chart-card__now">' + nowHtmlFor(key) + '</span>';
     var miniEl = document.createElement("div");
     miniEl.className = "chart-card__mini";
     card.appendChild(head);
@@ -414,7 +444,7 @@
       u.setScale("x", { min: ref.scales.x.min, max: ref.scales.x.max });
     }
 
-    charts[key] = { uplot: u, container: card, mini: miniEl, headNow: head.querySelector(".chart-card__now b") };
+    charts[key] = { uplot: u, container: card, mini: miniEl, headNow: head.querySelector(".chart-card__now") };
   }
 
   function destroyChartCard(key) {
@@ -451,7 +481,7 @@
       var c = charts[key];
       if (!c) return;
       c.uplot.setData(buildChartDataFor(key));
-      if (c.headNow) c.headNow.textContent = latestValueText(key);
+      if (c.headNow) c.headNow.innerHTML = nowHtmlFor(key);
     });
   }
 

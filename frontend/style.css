@@ -369,14 +369,15 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 }
 .chart-card__head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
-  gap: 10px;
+  gap: 4px 10px;
   margin-bottom: 2px;
   font-size: 0.82rem;
 }
 .chart-card__title { font-weight: 600; }
-.chart-card__now { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chart-card__now { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .chart-card__now b { color: var(--text); }
 .chart-card__mini { height: 140px; }
 .chart-empty {
