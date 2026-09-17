@@ -68,8 +68,15 @@ ActTmpOil
 ActPrsXfrSpec[1]
 ActPrsHldSpecMax[1]
 ActPrsMachSpecMax
+@080ETGraviDos1.MassPerc
 @080ETGraviDos2.MassPerc
+@080ETGraviDos3.MassPerc
+@080ETGraviDos4.MassPerc
 @080ETGraviPseudoDos.MassPerc
+@080ETDos1Name.Data
+@080ETDos2Name.Data
+@080ETDos3Name.Data
+@080ETDos4Name.Data
 @080CycRovMonit\CycVal.PdeValue
 @080CycRovMonit\PDESpecial0.PDESpecialBase
 @080ETRovMonit.SetNumber
