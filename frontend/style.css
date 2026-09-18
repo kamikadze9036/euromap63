@@ -605,6 +605,10 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 }
 .mc-row .mc-value--reason { color: var(--warn); font-variant-numeric: normal; }
 .mc-row .mc-value--danger { color: var(--err); }
+/* CT (cyklovy cas) barveni: modre = realny cyklus o vic nez 5 % rychlejsi
+   nez planovany, zelene = na cili, cervene = pomalejsi nez plan. */
+.mc-row .mc-value--better { color: var(--accent); }
+.mc-row .mc-value--ontarget { color: var(--ok); }
 
 .nav-link {
   color: var(--accent);

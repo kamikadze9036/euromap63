@@ -104,6 +104,27 @@
     return { text: text, danger: overTarget };
   }
 
+  // Realny (CYCLEMOYEN) a planovany (CYCLETHEO) cyklus z Cyclades
+  // Resultat_equipe (viz api/main.py _cycle_times_from_row) - modre kdyz
+  // je realny cyklus o vic nez 5 % rychlejsi nez planovany, zelene kdyz
+  // je na cili (rychlejsi/stejny, ale ne o vic nez 5 %), cervene kdyz je
+  // pomalejsi nez plan.
+  function ctValue(m) {
+    var real = m.cycle_time_real_s;
+    var planned = m.cycle_time_planned_s;
+    if (real === null || real === undefined) return null;
+    var text = escapeHtml(fmt(real, 1)) + ' s';
+    if (planned !== null && planned !== undefined) {
+      text += ' <span class="muted">(cíl ' + escapeHtml(fmt(planned, 1)) + ' s)</span>';
+    }
+    var cls = null;
+    if (planned !== null && planned !== undefined && planned > 0) {
+      var betterPct = (planned - real) / planned * 100;
+      cls = betterPct > 5 ? "mc-value--better" : (real <= planned ? "mc-value--ontarget" : "mc-value--danger");
+    }
+    return { text: text, cls: cls };
+  }
+
   function renderGrid(machines) {
     gridEl.innerHTML = "";
     if (!machines.length) {
@@ -116,13 +137,13 @@
       a.className = "machine-card state--" + (m.state || "neznamo");
       a.id = cardId(m.machine_code);
 
-      var latest = m.latest_cycle || {};
       var cavity = worstCavityValue(m);
+      var ct = ctValue(m);
 
       var rows =
         mcRow("WO", m.order_ref ? escapeHtml(m.order_ref) : null) +
         mcRow("Forma", m.tool_ref ? escapeHtml(formatTool(m)) : null) +
-        mcRow("CT", latest.cycle_time_s !== undefined && latest.cycle_time_s !== null ? '<span data-field="cycle_time_s">' + fmt(latest.cycle_time_s) + ' s</span>' : null) +
+        mcRow("CT", ct ? ct.text : null, ct ? ct.cls : null) +
         mcRow("Posl. št.", m.last_label ? escapeHtml(m.last_label) : null) +
         mcRow("Další št.", m.next_label ? escapeHtml(m.next_label) : null) +
         mcRow("Zmetk.", cavity ? cavity.text : null, cavity && cavity.danger ? "mc-value--danger" : null) +

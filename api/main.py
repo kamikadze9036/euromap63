@@ -544,7 +544,7 @@ def _query_cyclades_machine_status(mac_refmac):
     ale jen pro order_ref/nastroj (co se prave vyrabi), ne pro bezi/stoji.
     """
     if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
-        return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
+        return _unknown_status()
     try:
         conn = pymssql.connect(
             server=CYCLADES_DB_HOST,
@@ -585,11 +585,19 @@ def _query_cyclades_machine_status(mac_refmac):
                     (order_ref,),
                 )
                 tool_row = cur.fetchone()
+
+            cur.execute(
+                "SELECT TOP 1 CYCLETHEO, CYCLEMOYEN, CYCLE_UNITE FROM Resultat_equipe "
+                "WHERE REFMAC=%s ORDER BY FINEQU DESC",
+                (mac_refmac,),
+            )
+            cycle_row = cur.fetchone()
+            cycle_real_s, cycle_planned_s = _cycle_times_from_row(cycle_row)
         finally:
             conn.close()
     except pymssql.Error:
         log.warning("Cyclades dotaz na stav stroje %s selhal.", mac_refmac)
-        return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
+        return _unknown_status()
 
     if not events:
         state, stop_reason, stop_cause, stop_duration_s = "neznamo", None, None, None
@@ -612,6 +620,8 @@ def _query_cyclades_machine_status(mac_refmac):
         "stop_cause": stop_cause,
         "stop_reason": stop_reason,
         "stop_duration_s": stop_duration_s,
+        "cycle_time_real_s": cycle_real_s,
+        "cycle_time_planned_s": cycle_planned_s,
     }
 
 
@@ -626,7 +636,25 @@ def get_machine_status(machine_code, mac_refmac):
 
 
 def _unknown_status():
-    return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
+    return {
+        "state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None,
+        "tool_mounted_since": None, "cycle_time_real_s": None, "cycle_time_planned_s": None,
+    }
+
+
+def _cycle_times_from_row(row):
+    """CYCLEMOYEN (realny) a CYCLETHEO (planovany) cyklus stroje z
+    Resultat_equipe - overeno na datech, ze CYCLE_UNITE je u vsech stroju
+    "S" (sekundy). Jina jednotka (neocekavana, ale pro jistotu) se
+    nekonvertuje - radeji vratit None nez tise spatne cislo.
+    """
+    if not row or row.get("CYCLE_UNITE") != "S":
+        return None, None
+    real = float(row["CYCLEMOYEN"]) if row["CYCLEMOYEN"] is not None else None
+    planned = float(row["CYCLETHEO"]) if row["CYCLETHEO"] is not None else None
+    if real == 0:  # 0 = zadny dokonceny cyklus v teto smene zatim, ne realny cas
+        real = None
+    return real, planned
 
 
 CYCLADES_STATUS_REFRESH_INTERVAL_SEC = 5
@@ -740,6 +768,24 @@ def _batch_query_machine_status(mac_refmacs):
             for order_ref, cavities in cavities_by_order.items():
                 with_pct = [c for c in cavities if c["reject_pct"] is not None]
                 worst_cavity_by_order[order_ref] = max(with_pct, key=lambda c: c["reject_pct"]) if with_pct else None
+
+        # Realny (CYCLEMOYEN) a planovany (CYCLETHEO) cyklus stroje za
+        # aktualni/posledni smenu - z Resultat_equipe (stejny pohled, ze
+        # ktereho Cyclades pocita sve vlastni "Results by shift" reporty).
+        # CYCLE_UNITE overeno na datech 2026-09-18 jako "S" (sekundy) u
+        # vsech vzorkovanych stroju - jina jednotka se nekonvertuje, jen
+        # se ignoruje (viz _cycle_time_from_row nize).
+        cur.execute(
+            "SELECT v.mac AS MAC_REFMAC, x.CYCLETHEO, x.CYCLEMOYEN, x.CYCLE_UNITE FROM ("
+            f"  VALUES {values_placeholders}"
+            ") AS v(mac) "
+            "CROSS APPLY ("
+            "  SELECT TOP 1 CYCLETHEO, CYCLEMOYEN, CYCLE_UNITE FROM Resultat_equipe "
+            "  WHERE REFMAC = v.mac ORDER BY FINEQU DESC"
+            ") x",
+            tuple(mac_refmacs),
+        )
+        cycle_by_mac = {row["MAC_REFMAC"]: row for row in cur.fetchall()}
     finally:
         conn.close()
 
@@ -749,6 +795,8 @@ def _batch_query_machine_status(mac_refmacs):
         mac = row["MAC_REFMAC"]
         order_ref = order_ref_by_mac.get(mac)
         tool_row = tool_by_mac.get(mac)
+        cycle_row = cycle_by_mac.get(mac)
+        cycle_real_s, cycle_planned_s = _cycle_times_from_row(cycle_row)
         running = row["ARR_REFARRET"] == 255
         statuses[mac] = {
             "state": "bezi" if running else "stoji",
@@ -763,6 +811,8 @@ def _batch_query_machine_status(mac_refmacs):
             # nevyplati, staci pro ni jednotlivy on-demand dotaz na
             # machine.html (_query_cyclades_machine_status).
             "stop_duration_s": None,
+            "cycle_time_real_s": cycle_real_s,
+            "cycle_time_planned_s": cycle_planned_s,
         }
         worst_cavities[mac] = worst_cavity_by_order.get(order_ref)
     for mac in mac_refmacs:
