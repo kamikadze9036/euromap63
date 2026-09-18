@@ -1,4 +1,4 @@
-"""Integracni testy tiketu 1.1-1.4 proti SKUTECNE Postgres/TimescaleDB
+"""Integracni testy tiketu 1.1-1.4 a 1.8 proti SKUTECNE Postgres/TimescaleDB
 instanci - narozdil od test_reconstruct_occurred_at.py /
 test_read_new_cycles_dedup.py / test_checkpoint_integrity.py, ktere behem
 vyvoje bezely proti mockovanemu psycopg2 (sandbox bez pg_config/dockeru).
@@ -17,10 +17,16 @@ import pytest
 psycopg2 = pytest.importorskip("psycopg2")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
+if not DATABASE_URL or getattr(psycopg2, "_is_stub", False):
+    # conftest.py's os.environ.setdefault() means DATABASE_URL is never
+    # actually falsy, and its stub module (when no real driver is
+    # installed) IS importable - so without the "_is_stub" check,
+    # a sandbox with no psycopg2 install would hit NotImplementedError
+    # from every fixture instead of cleanly skipping this whole module.
     pytest.skip(
-        "DATABASE_URL neni nastaveno - nastav ho na skutecnou "
-        "Postgres/TimescaleDB instanci se schematem z postgres/init/ "
+        "DATABASE_URL neni nastaveno na skutecnou Postgres/TimescaleDB "
+        "instanci (nebo psycopg2 tady neni realne nainstalovany) - "
+        "nastav ho a spust proti DB se schematem z postgres/init/ "
         "pro spusteni techto integracnich testu.",
         allow_module_level=True,
     )
@@ -208,6 +214,39 @@ def test_hash_mismatch_at_checkpoint_line_is_detected(db_conn, machine, caplog):
         collector_module.read_new_cycles(db_conn)
 
     assert any("neodpovida ocekavanemu hashi" in r.message for r in caplog.records)
+
+
+def _heartbeat(db_conn):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT last_heartbeat_at FROM collector_state WHERE machine_code=%s",
+            (MACHINE_CODE,),
+        )
+        return cur.fetchone()[0]
+
+
+def test_write_heartbeat_sets_last_heartbeat_at_against_real_db(db_conn, machine):
+    """Ticket 1.8 (see postgres/init/20_add_collector_heartbeat.sql):
+    write_heartbeat() must be a real, standalone DB write against the
+    actual collector_state.last_heartbeat_at column, independent of
+    read_new_cycles() ever having found any data."""
+    assert _heartbeat(db_conn) is None
+
+    collector_module.write_heartbeat(db_conn)
+
+    first = _heartbeat(db_conn)
+    assert first is not None
+
+    # A second call (simulating the next main() loop iteration, e.g. with
+    # no new REPORTS.DAT data at all) must move the timestamp forward -
+    # this is the whole point of ticket 1.8: unlike last_poll_at, the
+    # heartbeat advances every iteration regardless of whether any cycles
+    # were ingested.
+    import time as _time
+    _time.sleep(0.01)
+    collector_module.write_heartbeat(db_conn)
+    second = _heartbeat(db_conn)
+    assert second >= first
 
 
 def test_malformed_last_line_is_held_back_then_resolves(db_conn, machine):

@@ -1,0 +1,43 @@
+-- ============================================================
+--  Skutecny heartbeat collectoru (MES_TARGET_ARCHITECTURE.md §5.3
+--  "heartbeat a diagnostika", MES_IMPLEMENTATION_BACKLOG.md tiket 1.8).
+--
+--  collector_state.last_poll_at (viz 01_schema.sql) NENI spolehlivy
+--  heartbeat, i kdyz to jeho jmeno naznacuje. collector.py::read_new_cycles
+--  ma tri mista s "return 0" DRIV, nez se vubec dostane k UPDATE
+--  ... last_poll_at=now() na svem konci:
+--
+--    1. REPORTS.DAT neexistuje.
+--    2. soubor je prazdny (zadne radky).
+--    3. len(data_lines) <= last_count - tohle je BEZNY pripad: cyklus lisu
+--       trva radove 30-90+ sekund, zatimco POLL_INTERVAL_SEC je typicky jen
+--       3 sekundy, takze naprosta vetsina pollu nenajde zadna nova data a
+--       skonci prave tady.
+--
+--  Dusledek: last_poll_at ve skutecnosti znamena "cas posledniho NOVE
+--  VLOZENEHO cyklu", ne "cas, kdy collector naposledy uspesne dobehl svou
+--  pollovaci smycku". Collector, ktery bezi normalne (jen stroj prave
+--  nedokoncil cyklus), tak vypada v last_poll_at identicky jako collector,
+--  ktery je uz hodinu tise mrtvy/zaseknuty/odpojeny - presne to heartbeat ma
+--  odhalit, a last_poll_at to nedokaze.
+--
+--  Reseni: samostatny sloupec last_heartbeat_at, ktery collector.py
+--  aktualizuje JEDNOU ZA KAZDOU ITERACI hlavni smycky v main() (viz
+--  collector.py::write_heartbeat), bez ohledu na to, jestli read_new_cycles()
+--  nasla nova data, skoncila nekterym z vyse uvedenych early-returnu, nebo
+--  dokonce vyhodila osetrenou vyjimku. Zapis heartbeatu je zamerne oddeleny
+--  od read_new_cycles() (ktera resi jen ingest cyklu, ne diagnostiku
+--  zivosti) a ma vlastni try/except, aby pripadny vypadek DB pri zapisu
+--  heartbeatu nikdy neshodil samotny sber dat.
+--
+--  lag_seconds se ZAMERNE NEUKLADA jako sloupec - je to funkce "ted", takze
+--  by zastaralo v okamziku zapisu a vyzadovalo neustale prepisovani. Misto
+--  toho se pocita AZ PRI CTENI v novem endpointu GET /api/collectors/health
+--  (api/main.py) jako now() - last_heartbeat_at (zda collector proces
+--  bezi) a samostatne jako now() - cas posledniho cyklu (zda stroj skutecne
+--  produkuje data / jestli ingest stiha) - dva odlisne signaly, ne jedno
+--  cislo.
+-- ============================================================
+
+ALTER TABLE collector_state
+    ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
