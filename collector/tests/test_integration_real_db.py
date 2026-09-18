@@ -11,6 +11,7 @@ preskoci - v CI/lokalnim vyvoji bez DB se tedy nerozbije zbytek sady.
 """
 import hashlib
 import os
+import sys
 
 import pytest
 
@@ -32,6 +33,16 @@ if not DATABASE_URL or getattr(psycopg2, "_is_stub", False):
     )
 
 import collector as collector_module
+
+# scripts/replay_reports_dat.py (ticket 1.6) lives outside collector/, and
+# only test_replay_reports_dat.py's own sys.path insertion makes it
+# importable there - this module needs the same insertion to exercise it
+# against a real DB below.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_SCRIPTS_DIR = os.path.join(_REPO_ROOT, "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+import replay_reports_dat as replay_module
 
 MACHINE_CODE = "VERIFY-TEST-01"
 
@@ -324,3 +335,101 @@ def test_maybe_rotate_records_archive_row_against_real_db(db_conn, machine, monk
     assert reports_lines_read == 0
     assert last_line_hash is None
     assert size_at_checkpoint is None
+
+
+def _insert_archive_record(db_conn, archive_path, sha256_hex, line_count, size_bytes):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO reports_dat_archive "
+            "(machine_code, archive_path, sha256, line_count, size_bytes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (MACHINE_CODE, archive_path, sha256_hex, line_count, size_bytes),
+        )
+    db_conn.commit()
+
+
+def test_replay_archive_apply_inserts_cycles_against_real_db(db_conn, machine):
+    """Ticket 1.6 core scenario: a small synthetic "archived" file (never
+    actually produced by maybe_rotate() here - just written directly to
+    tmp_path, exactly as a real REPORTS.DAT.<timestamp> would look) plus a
+    matching reports_dat_archive row, replayed with --apply (called
+    directly, not via subprocess) against the real test DB."""
+    tmp_path = machine
+    archive_path = tmp_path / "REPORTS.DAT.20260101T000000"
+    content = "ActCntCyc,ActTimCyc\n1,10.0\n2,12.0\n3,15.0\n"
+    archive_path.write_text(content, encoding="utf-8")
+    sha256_hex = replay_module._sha256_file(str(archive_path))
+    _insert_archive_record(db_conn, str(archive_path), sha256_hex, 3, len(content.encode("utf-8")))
+
+    report = replay_module.replay_archive(
+        db_conn, MACHINE_CODE, str(archive_path), apply=True, skip_checksum_verify=False,
+    )
+
+    assert report.applied is True
+    assert report.checksum_verified is True
+    assert report.new_count == 3
+    assert report.duplicate_count == 0
+    assert _cycles_count(db_conn) == 3
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT cycle_count, order_ref, occurred_at_source FROM cycles "
+            "WHERE machine_code=%s ORDER BY cycle_count",
+            (MACHINE_CODE,),
+        )
+        rows = cur.fetchall()
+    assert [r[0] for r in rows] == [1, 2, 3]
+    assert all(r[1] is None for r in rows), "replay never guesses order_ref - must stay NULL"
+    assert all(r[2] == "reconstructed_from_cycle_time" for r in rows)
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM cycle_identity WHERE machine_code=%s", (MACHINE_CODE,))
+        assert cur.fetchone()[0] == 3
+
+
+def test_replay_same_archive_twice_does_not_duplicate_against_real_db(db_conn, machine):
+    tmp_path = machine
+    archive_path = tmp_path / "REPORTS.DAT.20260101T010000"
+    content = "ActCntCyc,ActTimCyc\n10,10.0\n11,11.0\n"
+    archive_path.write_text(content, encoding="utf-8")
+    sha256_hex = replay_module._sha256_file(str(archive_path))
+    _insert_archive_record(db_conn, str(archive_path), sha256_hex, 2, len(content.encode("utf-8")))
+
+    first = replay_module.replay_archive(db_conn, MACHINE_CODE, str(archive_path), apply=True)
+    assert first.new_count == 2
+    assert _cycles_count(db_conn) == 2
+
+    second = replay_module.replay_archive(db_conn, MACHINE_CODE, str(archive_path), apply=True)
+    assert second.new_count == 0
+    assert second.duplicate_count == 2
+    assert _cycles_count(db_conn) == 2, "replaying the same archive twice must not duplicate cycles"
+
+
+def test_replay_dry_run_writes_nothing_against_real_db(db_conn, machine):
+    tmp_path = machine
+    archive_path = tmp_path / "REPORTS.DAT.20260101T015000"
+    content = "ActCntCyc,ActTimCyc\n20,10.0\n21,11.0\n"
+    archive_path.write_text(content, encoding="utf-8")
+    sha256_hex = replay_module._sha256_file(str(archive_path))
+    _insert_archive_record(db_conn, str(archive_path), sha256_hex, 2, len(content.encode("utf-8")))
+
+    report = replay_module.replay_archive(db_conn, MACHINE_CODE, str(archive_path), apply=False)
+
+    assert report.applied is False
+    assert report.new_count == 2
+    assert _cycles_count(db_conn) == 0, "dry run must not write any cycles row"
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM cycle_identity WHERE machine_code=%s", (MACHINE_CODE,))
+        assert cur.fetchone()[0] == 0, "dry run must not write any cycle_identity row"
+
+
+def test_replay_checksum_mismatch_refuses_against_real_db(db_conn, machine):
+    tmp_path = machine
+    archive_path = tmp_path / "REPORTS.DAT.20260101T020000"
+    archive_path.write_text("ActCntCyc,ActTimCyc\n1,10.0\n", encoding="utf-8")
+    _insert_archive_record(db_conn, str(archive_path), "0" * 64, 1, 100)
+
+    with pytest.raises(replay_module.ChecksumVerificationError):
+        replay_module.replay_archive(db_conn, MACHINE_CODE, str(archive_path), apply=True)
+
+    assert _cycles_count(db_conn) == 0, "refusal must happen before any write"
