@@ -4,6 +4,22 @@ Sbírá cyklová data ze vstřikovacího lisu (Krauss Maffei MC5) přes protokol
 EUROMAP 63/SPI a ukládá je do TimescaleDB, s API a dashboardem pro zobrazení
 aktuálních hodnot a trendů.
 
+## Technologický stack
+
+- **Backend/API** — FastAPI (Python) na uvicornu (1 worker — in-memory
+  WebSocket pub/sub), REST + WebSocket (`/ws/cycles`) pro live push cyklů.
+  `psycopg2-binary` pro Postgres, `pymssql` pro čtení z Cyclades MES (MSSQL).
+- **Collector** — samostatná Python služba, parsuje EUROMAP63/SPI
+  `REPORTS.DAT`, zapisuje do DB, obsluhuje JOB/REQ soubory pro stroj.
+- **Databáze** — TimescaleDB (Postgres 16), hypertable `cycles`
+  (`cycle_count`/`cycle_time_s` typované, ostatní parametry v `JSONB`).
+- **FTP** — `pure-ftpd` (`network_mode: host` kvůli PASV), nativní UNIX-style
+  listing.
+- **Frontend** — čistý vanilla JS/HTML/CSS (žádný framework, žádné CDN
+  závislosti), servírovaný přes nginx.
+- **Orchestrace/deploy** — Docker Compose (5 služeb: ftp, postgres, collector,
+  api, frontend), nasazeno na factory VM `spc-vm` přes SSH/scp.
+
 ## Architektura
 
 ```
