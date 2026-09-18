@@ -425,13 +425,20 @@
     var head = document.createElement("div");
     head.className = "chart-card__head";
     head.innerHTML =
-      '<span class="chart-card__title">' + escapeHtml(paramLabel(key)) + '</span>' +
+      '<span class="chart-card__title-group">' +
+        '<span class="chart-card__drag" draggable="true" title="Přetažením změň pořadí grafů">⠿</span>' +
+        '<span class="chart-card__title">' + escapeHtml(paramLabel(key)) + '</span>' +
+      '</span>' +
       '<span class="chart-card__now">' + nowHtmlFor(key) + '</span>';
     var miniEl = document.createElement("div");
     miniEl.className = "chart-card__mini";
     card.appendChild(head);
     card.appendChild(miniEl);
     chartsEl.appendChild(card);
+
+    var dragHandle = head.querySelector(".chart-card__drag");
+    dragHandle.addEventListener("dragstart", onChartDragStart);
+    dragHandle.addEventListener("dragend", onChartDragEnd);
 
     var text = themeColor("--text", "#1b1f24");
     var u = new uPlot(buildChartOpts(key, miniEl.clientWidth || 900), buildChartDataFor(key), miniEl);
@@ -447,6 +454,50 @@
 
     charts[key] = { uplot: u, container: card, mini: miniEl, headNow: head.querySelector(".chart-card__now") };
   }
+
+  // Rucni preusporadani grafu tazenim za uchyt (⠿) v hlavicce karty - jinak
+  // by poradi grafu vzdy odpovidalo jen poradi zaskrtavani v pickeru
+  // (selectedKeys), bez moznosti to zmenit. Tazeny prvek se posouva primo
+  // v DOM behem dragover (klasicky vanilla-JS reorder pattern), a teprve
+  // pri puštění se z aktualniho poradi DOM elementu prepocita selectedKeys -
+  // diky tomu prezije poradi i rebuildAllCharts() (zmena casoveho okna,
+  // reset zoomu), ktery grafy staví znovu presne podle selectedKeys.
+  var draggedCard = null;
+
+  function onChartDragStart(evt) {
+    draggedCard = evt.currentTarget.closest(".chart-card");
+    if (!draggedCard) return;
+    draggedCard.classList.add("chart-card--dragging");
+    evt.dataTransfer.effectAllowed = "move";
+    try { evt.dataTransfer.setData("text/plain", draggedCard.dataset.key); } catch (e) { /* ignore */ }
+  }
+
+  function onChartDragEnd() {
+    if (draggedCard) draggedCard.classList.remove("chart-card--dragging");
+    draggedCard = null;
+  }
+
+  function onChartsDragOver(evt) {
+    if (!draggedCard) return;
+    evt.preventDefault();
+    var target = evt.target.closest(".chart-card");
+    if (!target || target === draggedCard || target.parentNode !== chartsEl) return;
+    var rect = target.getBoundingClientRect();
+    var after = evt.clientY > rect.top + rect.height / 2;
+    chartsEl.insertBefore(draggedCard, after ? target.nextSibling : target);
+  }
+
+  function onChartsDrop(evt) {
+    if (!draggedCard) return;
+    evt.preventDefault();
+    selectedKeys = Array.prototype.map.call(
+      chartsEl.querySelectorAll(".chart-card"),
+      function (c) { return c.dataset.key; }
+    );
+  }
+
+  chartsEl.addEventListener("dragover", onChartsDragOver);
+  chartsEl.addEventListener("drop", onChartsDrop);
 
   function destroyChartCard(key) {
     var c = charts[key];

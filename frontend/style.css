@@ -377,7 +377,11 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   margin-bottom: 2px;
   font-size: 0.82rem;
 }
+.chart-card__title-group { display: flex; align-items: center; gap: 6px; }
 .chart-card__title { font-weight: 600; }
+.chart-card__drag { cursor: grab; color: var(--muted); user-select: none; line-height: 1; }
+.chart-card__drag:active { cursor: grabbing; }
+.chart-card--dragging { opacity: 0.4; }
 .chart-card__now { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .chart-card__now b { color: var(--text); }
 .chart-card__mini { height: 140px; }
