@@ -45,6 +45,7 @@ def _cleanup(conn, machine_code=MACHINE_CODE):
     with conn.cursor() as cur:
         cur.execute("DELETE FROM cycles WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM cycle_identity WHERE machine_code=%s", (machine_code,))
+        cur.execute("DELETE FROM reports_dat_archive WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM collector_state WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM machines WHERE machine_code=%s", (machine_code,))
     conn.commit()
@@ -271,3 +272,55 @@ def test_malformed_last_line_is_held_back_then_resolves(db_conn, machine):
     assert _cycles_count(db_conn) == 3
     reports_lines_read, _, _ = _checkpoint(db_conn)
     assert reports_lines_read == 4
+
+
+def _archive_rows(db_conn):
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT archive_path, sha256, line_count, size_bytes FROM reports_dat_archive "
+            "WHERE machine_code=%s ORDER BY archived_at",
+            (MACHINE_CODE,),
+        )
+        return cur.fetchall()
+
+
+def test_maybe_rotate_records_archive_row_against_real_db(db_conn, machine, monkeypatch):
+    """Tiket 1.5 (viz postgres/init/21_add_reports_dat_archive.sql): po
+    rotaci REPORTS.DAT musi v reports_dat_archive pribyt radek se spravnym
+    sha256/velikosti archivovaneho souboru a s poctem radku, ktere byly do
+    "cycles" skutecne ingestovany PRED touto rotaci (ne s celkovym poctem
+    radku ve souboru)."""
+    tmp_path = machine
+    # 4 radky v souboru, ale checkpoint drzime na 3 (simuluje napr. holdback
+    # nedokonceneho posledniho radku) - archiv ma zaznamenat 3, ne 4.
+    _write_reports_dat(tmp_path, ["1,10.0", "2,12.0", "3,15.0", "4,11.0"])
+    assert collector_module.read_new_cycles(db_conn) == 4
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "UPDATE collector_state SET reports_lines_read=3 WHERE machine_code=%s",
+            (MACHINE_CODE,),
+        )
+    db_conn.commit()
+
+    # Vynutit rotaci bez skutecneho cekani/psani JOB souboru mimo tento test.
+    monkeypatch.setattr(collector_module, "ROTATE_SIZE_MB", 0.0000001)
+    monkeypatch.setattr(collector_module, "write_request", lambda job_name: None)
+    monkeypatch.setattr(collector_module.time, "sleep", lambda secs: None)
+
+    collector_module.maybe_rotate(db_conn)
+
+    rows = _archive_rows(db_conn)
+    assert len(rows) == 1
+    archive_path, sha256_hex, line_count, size_bytes = rows[0]
+    assert os.path.exists(archive_path)
+    assert archive_path != str(tmp_path / "REPORTS.DAT")
+    with open(archive_path, "rb") as f:
+        content = f.read()
+    assert sha256_hex == hashlib.sha256(content).hexdigest()
+    assert size_bytes == len(content)
+    assert line_count == 3
+
+    reports_lines_read, last_line_hash, size_at_checkpoint = _checkpoint(db_conn)
+    assert reports_lines_read == 0
+    assert last_line_hash is None
+    assert size_at_checkpoint is None
