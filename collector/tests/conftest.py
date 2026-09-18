@@ -27,17 +27,20 @@ if _COLLECTOR_DIR not in sys.path:
     sys.path.insert(0, _COLLECTOR_DIR)
 
 if "psycopg2" not in sys.modules:
-    fake_psycopg2 = types.ModuleType("psycopg2")
+    try:
+        import psycopg2 as _real_psycopg2  # noqa: F401 - real driver available (e.g. test_integration_real_db.py), nothing to stub.
+    except ImportError:
+        fake_psycopg2 = types.ModuleType("psycopg2")
 
-    class _Error(Exception):
-        pass
+        class _Error(Exception):
+            pass
 
-    def _connect(*_args, **_kwargs):
-        raise NotImplementedError(
-            "psycopg2 is stubbed out for unit tests - no real DB connection "
-            "is available or needed here."
-        )
+        def _connect(*_args, **_kwargs):
+            raise NotImplementedError(
+                "psycopg2 is stubbed out for unit tests - no real DB connection "
+                "is available or needed here."
+            )
 
-    fake_psycopg2.Error = _Error
-    fake_psycopg2.connect = _connect
-    sys.modules["psycopg2"] = fake_psycopg2
+        fake_psycopg2.Error = _Error
+        fake_psycopg2.connect = _connect
+        sys.modules["psycopg2"] = fake_psycopg2
