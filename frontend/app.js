@@ -135,25 +135,33 @@
   }
 
   // Kategoricka paleta pro duvody prostoju (8 fixnich slotu, viz style.css
-  // --series-1..8). Barva se prideluje podle poradi PRVNIHO vyskytu
-  // duvodu v aktualne zobrazenem okne (ne hashem kodu - napr. "Porucha
-  // nastroje" kod 5 a "Preventivni udrzba" kod 29 by na modulo-8 hash
-  // spadly do stejneho slotu). Diky tomu se nikdy nesrazi dva duvody,
-  // co se zobrazuji soucasne; napric ruznymi okny se barva stejneho
-  // duvodu muze lisit, pokud se zmeni mnozina soucasne zobrazenych duvodu.
+  // --series-1..8). Barva se prideluje podle poradi PRVNIHO vyskytu duvodu
+  // NAPRIC CELYM nactenym oknem (lastDowntimeResult.segments), ne jen
+  // segmenty aktualne viditelnymi po zoomu/panu - jinak by se pri kazdem
+  // zoomu prepocitalo poradi "prvniho vyskytu" z jine podmnoziny segmentu
+  // a barva stejneho duvodu by se pri zoomu menila. Mapa se prepocita
+  // jen pri nactenim novych dat (loadDowntimes), renderDowntimesForRange
+  // ji pak jen cte.
   var UNKNOWN_REASON_COLOR = "var(--muted)";
+  var reasonColorMap = {};
 
-  function makeReasonColorAssigner() {
+  function buildReasonColorMap(segments) {
+    var map = {};
     var order = [];
-    return function (label) {
-      if (label === null || label === undefined) return UNKNOWN_REASON_COLOR;
-      var idx = order.indexOf(label);
-      if (idx === -1) {
-        idx = order.length;
-        order.push(label);
-      }
-      return "var(--series-" + ((idx % 8) + 1) + ")";
-    };
+    (segments || []).forEach(function (seg) {
+      var label = seg.reason || null;
+      if (label === null) return;
+      if (order.indexOf(label) === -1) order.push(label);
+    });
+    order.forEach(function (label, idx) {
+      map[label] = "var(--series-" + ((idx % 8) + 1) + ")";
+    });
+    return map;
+  }
+
+  function colorForReason(label) {
+    if (label === null || label === undefined) return UNKNOWN_REASON_COLOR;
+    return reasonColorMap[label] || UNKNOWN_REASON_COLOR;
   }
 
   function updateStateBadge(m) {
@@ -844,7 +852,6 @@
 
     var totalDown = 0;
     var byReason = {}; // reason label -> { color, duration }
-    var assignColor = makeReasonColorAssigner();
 
     segments.forEach(function (seg) {
       var startT = new Date(seg.start).getTime();
@@ -854,7 +861,7 @@
       var visibleDurationS = (clippedEnd - clippedStart) / 1000;
       totalDown += visibleDurationS;
       var label = seg.reason || null;
-      var color = assignColor(label);
+      var color = colorForReason(label);
       var displayLabel = label || "Neznámý důvod";
 
       var leftPct = Math.max(0, (clippedStart - minT) / span * 100);
@@ -906,6 +913,7 @@
     )
       .then(function (result) {
         lastDowntimeResult = result;
+        reasonColorMap = buildReasonColorMap(result.segments);
         renderDowntimesForRange(new Date(result.since).getTime(), new Date(result.until).getTime());
       })
       .catch(function () {

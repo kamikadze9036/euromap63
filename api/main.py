@@ -253,28 +253,12 @@ DOWNTIME_REASON_LOOKUP_PAD_MIN = 10  # jak daleko za konec mezery jeste hledat d
 MAX_DOWNTIME_SEGMENTS_ENRICHED = 200  # limit dotazu na Cyclades za jedno volani
 
 
-@app.get("/api/downtimes")
-def downtimes(machine: str, since: str, until: str = None, min_gap_s: float = Query(90, ge=10)):
-    """Casova osa prostoju odvozena z MEZER v nasich vlastnich cyklovych
-    datech (zadny cyklus po dobu >= min_gap_s = stroj stal) - na rozdil
-    od Cyclades HISTOEVENEMENTS (periodicky "sample" log s nejasnou
-    presnou semantikou zacatku/konce) je tohle nezpochybnitelne presne,
-    protoze vychazi primo z toho, kdy nas EUROMAP63 sber skutecne
-    zaznamenal/nezaznamenal cyklus. Cyclades HISTOEVENEMENTS se pouzije
-    jen jako doplnek pro CITELNY DUVOD té mezery (ARR_REFARRET/ARR_LIBARRET),
-    ne pro urceni hranic mezery samotne.
+def _downtime_segments_from_cycles(rows, min_gap_s):
+    """Mezery v nasich vlastnich cyklovych datech (zadny cyklus po dobu
+    >= min_gap_s = stroj stal) - nezpochybnitelne presne, protoze vychazi
+    primo z toho, kdy nas EUROMAP63 sber skutecne zaznamenal/nezaznamenal
+    cyklus. Pouziva se jen pro stroje s vlastnim cyklovym sberem.
     """
-    since_dt = datetime.fromisoformat(since)
-    until_dt = datetime.fromisoformat(until) if until else datetime.now(timezone.utc)
-
-    with get_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT time, cycle_count, cycle_time_s FROM cycles WHERE machine_code=%s AND time >= %s AND time <= %s "
-            "ORDER BY cycle_count",
-            (machine, since_dt, until_dt),
-        )
-        rows = cur.fetchall()
-
     segments = []
     for prev, cur_row in zip(rows, rows[1:]):
         gap = (cur_row["time"] - prev["time"]).total_seconds()
@@ -295,32 +279,105 @@ def downtimes(machine: str, since: str, until: str = None, min_gap_s: float = Qu
                 "reason": None,
                 "reason_code": None,
             })
+    return segments
+
+
+def _downtime_segments_from_histo_events(mac_refmac, since_dt, until_dt, min_gap_s):
+    """Fallback zdroj prostoju pro stroje BEZ vlastniho EUROMAP63 sberu
+    (vetsina z 20 lisu na hale) - odvozeno primo z Cyclades
+    HISTOEVENEMENTS (kod 255 = bezi, jinak realny duvod prostoje).
+    Na rozdil od _downtime_segments_from_cycles je to jen priblizne:
+    HISTOEVENEMENTS je periodicky vzorkovany log (vzorky po ~5-45 min),
+    ne log-na-zmenu, takze presny okamzik prechodu bezi<->stoji neznama -
+    hranice useku jsou casem NEJBLIZSIHO vzorku, ne presnym prechodem.
+    """
+    if not (mac_refmac and pymssql and CYCLADES_DB_HOST):
+        return []
+    try:
+        rows = _query_cyclades(
+            "SUIVPRO",
+            "SELECT h.HISEVE_DATEEVE, h.ARR_REFARRET, t.ARR_LIBARRET "
+            "FROM HISTOEVENEMENTS h LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = h.ARR_REFARRET "
+            "WHERE h.HISEVE_REFMAC=%s AND h.HISEVE_DATEEVE >= %s AND h.HISEVE_DATEEVE <= %s "
+            "ORDER BY h.HISEVE_DATEEVE",
+            (mac_refmac, _to_cyclades_naive(since_dt), _to_cyclades_naive(until_dt)),
+        )
+    except HTTPException:
+        return []
+
+    segments = []
+    current = None
+    for row in rows:
+        ts = _cyclades_local(row["HISEVE_DATEEVE"])
+        if row["ARR_REFARRET"] == 255:
+            if current:
+                current["end"] = ts
+                segments.append(current)
+                current = None
+            continue
+        if current and current["reason_code"] == row["ARR_REFARRET"]:
+            continue  # dalsi vzorek stejneho prostoje, cekame na zmenu/konec
+        if current:
+            current["end"] = ts
+            segments.append(current)
+        current = {"start": ts, "end": None, "reason": row["ARR_LIBARRET"], "reason_code": row["ARR_REFARRET"]}
+    if current:
+        current["end"] = until_dt
+        segments.append(current)
+
+    for seg in segments:
+        seg["duration_s"] = (seg["end"] - seg["start"]).total_seconds()
+    return [s for s in segments if s["duration_s"] >= min_gap_s]
+
+
+@app.get("/api/downtimes")
+def downtimes(machine: str, since: str, until: str = None, min_gap_s: float = Query(90, ge=10)):
+    since_dt = datetime.fromisoformat(since)
+    until_dt = datetime.fromisoformat(until) if until else datetime.now(timezone.utc)
+
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT time, cycle_count, cycle_time_s FROM cycles WHERE machine_code=%s AND time >= %s AND time <= %s "
+            "ORDER BY cycle_count",
+            (machine, since_dt, until_dt),
+        )
+        rows = cur.fetchall()
 
     mac_refmac = _mac_refmac_for_machine_code(machine)
-    if mac_refmac and pymssql and CYCLADES_DB_HOST:
-        for seg in segments[:MAX_DOWNTIME_SEGMENTS_ENRICHED]:
-            try:
-                hist = _query_cyclades(
-                    "SUIVPRO",
-                    "SELECT TOP 1 h.ARR_REFARRET, t.ARR_LIBARRET FROM HISTOEVENEMENTS h "
-                    "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = h.ARR_REFARRET "
-                    "WHERE h.HISEVE_REFMAC=%s AND h.ARR_REFARRET <> 255 "
-                    "AND h.HISEVE_DATEEVE >= %s AND h.HISEVE_DATEEVE <= DATEADD(minute, %s, %s) "
-                    "ORDER BY h.HISEVE_DATEEVE",
-                    (
-                        mac_refmac,
-                        _to_cyclades_naive(seg["start"]),
-                        DOWNTIME_REASON_LOOKUP_PAD_MIN,
-                        _to_cyclades_naive(seg["end"]),
-                    ),
-                )
-            except HTTPException:
-                hist = None
-            if hist:
-                seg["reason_code"] = hist[0]["ARR_REFARRET"]
-                seg["reason"] = hist[0]["ARR_LIBARRET"]
 
-    return {"since": since_dt, "until": until_dt, "min_gap_s": min_gap_s, "segments": segments}
+    if rows:
+        segments = _downtime_segments_from_cycles(rows, min_gap_s)
+        if mac_refmac and pymssql and CYCLADES_DB_HOST:
+            for seg in segments[:MAX_DOWNTIME_SEGMENTS_ENRICHED]:
+                try:
+                    hist = _query_cyclades(
+                        "SUIVPRO",
+                        "SELECT TOP 1 h.ARR_REFARRET, t.ARR_LIBARRET FROM HISTOEVENEMENTS h "
+                        "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = h.ARR_REFARRET "
+                        "WHERE h.HISEVE_REFMAC=%s AND h.ARR_REFARRET <> 255 "
+                        "AND h.HISEVE_DATEEVE >= %s AND h.HISEVE_DATEEVE <= DATEADD(minute, %s, %s) "
+                        "ORDER BY h.HISEVE_DATEEVE",
+                        (
+                            mac_refmac,
+                            _to_cyclades_naive(seg["start"]),
+                            DOWNTIME_REASON_LOOKUP_PAD_MIN,
+                            _to_cyclades_naive(seg["end"]),
+                        ),
+                    )
+                except HTTPException:
+                    hist = None
+                if hist:
+                    seg["reason_code"] = hist[0]["ARR_REFARRET"]
+                    seg["reason"] = hist[0]["ARR_LIBARRET"]
+        source = "cycles"
+    else:
+        # Stroj bez vlastniho EUROMAP63 sberu (nebo bez dat v tomto okne) -
+        # spocitej prostoje primo z Cyclades HISTOEVENEMENTS, aby graf
+        # prostoju byl dostupny u kazdeho ze 20 lisu, ne jen instrumentovaneho.
+        segments = _downtime_segments_from_histo_events(mac_refmac, since_dt, until_dt, min_gap_s)
+        source = "histo_events"
+
+    return {"since": since_dt, "until": until_dt, "min_gap_s": min_gap_s, "segments": segments, "source": source}
 
 
 @app.get("/api/cycles/by-package")
@@ -402,6 +459,7 @@ def cycles_by_package(label: str, limit: int = Query(5000, le=50000)):
 
 _status_cache = {}  # machine_code -> {"data": {...}, "ts": float}
 _label_cache = {}  # machine_code -> {"data": {...}, "ts": float}
+_worst_cavity_cache = {}  # machine_code -> {"data": {...}|None, "ts": float}
 
 
 def _query_label_progress(mac_refmac):
@@ -454,13 +512,36 @@ def get_label_progress(machine_code, mac_refmac):
     return data
 
 
+def _duration_from_recent_events(latest_code, recent_rows, now_local):
+    """Priblizne trvani aktualniho stavu: HISTOEVENEMENTS je periodicky
+    vzorkovany log (ne log-na-zmenu), takze presny okamzik prechodu
+    neznama - odhadneme ho jako cas NEJSTARSIHO vzorku v souvislem useku
+    se stejnym kodem jako ten nejnovejsi (v ramci nekolika posledne
+    natazenych radku). Muze mirne podhodnotit skutecne trvani, pokud byl
+    stejny stav uz i pred natazenymi radky.
+    """
+    since = None
+    for row in recent_rows:
+        if row["ARR_REFARRET"] != latest_code:
+            break
+        since = row["HISEVE_DATEEVE"]
+    if since is None:
+        return None
+    return (now_local - _cyclades_local(since)).total_seconds()
+
+
 def _query_cyclades_machine_status(mac_refmac):
-    """Zjisti, jestli stroj bezi/stoji podle SUIVPRO.dbo.[OF] (base tabulka,
-    ne view - live rolling okno otevrenych zakazek). Zivy stav "jede forma":
-    radek s OF_DATEFINOF IS NULL = zakazka jeste bezi na stroji.
-    OF_CAUSEARRETCOURANT = -2 a OF_DUREARRETCOURANT = 0 -> stroj aktualne jede
-    (-2 neni v TYPES_ARRETS - je to sentinel "bez prostoje", ne skutecny duvod).
-    Jinak stoji - duvod se dohleda v TYPES_ARRETS (ARR_REFARRET -> ARR_LIBARRET).
+    """Zjisti, jestli stroj FYZICKY bezi/stoji podle SUIVPRO.dbo.HISTOEVENEMENTS
+    (periodicky vzorkovany stavovy log stroje) - kod ARR_REFARRET=255 je
+    sentinel "bez aktualniho prostoje" (bezi), jakykoliv jiny kod je realny
+    duvod prostoje z TYPES_ARRETS. Zamerne NEpouzivame SUIVPRO.dbo.[OF]
+    (existence otevrene zakazky) jako signal bezi/stoji - stroj muze bezet
+    i bez prirazene zakazky (zkusebni kus, rucni rezim) a naopak stat i s
+    otevrenou zakazkou (ceka na obsluhu/material). Overeno na datech
+    2026-09-18: P220-005 mel po cely den kod 255 (bezi), presto ze [OF]
+    pro nej nemel zadny otevreny radek - puvodni [OF]-only heuristika ho
+    proto chybne hlasila jako "bez zakazky". [OF] tabulka se pouziva dal,
+    ale jen pro order_ref/nastroj (co se prave vyrabi), ne pro bezi/stoji.
     """
     if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
         return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
@@ -476,35 +557,61 @@ def _query_cyclades_machine_status(mac_refmac):
         try:
             cur = conn.cursor(as_dict=True)
             cur.execute(
-                "SELECT TOP 1 o.OF_REFOF, o.OUT_REFOUT, o.OF_CAUSEARRETCOURANT, "
-                "o.OF_DUREARRETCOURANT, t.ARR_LIBARRET, u.OUT_LIBOUT, u.OUT_DATEMONTAGE "
-                "FROM [OF] o "
-                "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = o.OF_CAUSEARRETCOURANT "
-                "LEFT JOIN OUTIL u ON u.OUT_REFOUT = o.OUT_REFOUT "
-                "WHERE o.MAC_REFMAC=%s AND o.OF_DATEFINOF IS NULL "
-                "ORDER BY o.OF_DATELANCER DESC",
+                "SELECT TOP 20 h.ARR_REFARRET, h.HISEVE_DATEEVE, t.ARR_LIBARRET "
+                "FROM HISTOEVENEMENTS h LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = h.ARR_REFARRET "
+                "WHERE h.HISEVE_REFMAC=%s ORDER BY h.HISEVE_DATEEVE DESC",
                 (mac_refmac,),
             )
-            row = cur.fetchone()
+            events = cur.fetchall()
+
+            # Aktualni zakazka = OF_REFOF z POSLEDNI smenove deklarace
+            # (BILAN_SAISIE_EQUIPE), ne z [OF]/OF_DATEFINOF - viz duvod
+            # v komentari u _batch_query_machine_status. [OF] se pouziva
+            # jen jako doplnek pro nastroj (forma) k teto zakazce.
+            cur.execute(
+                "SELECT TOP 1 BILPSEQU_REFETIQUETTE, OF_REFOF FROM BILAN_SAISIE_EQUIPE "
+                "WHERE BILPSEQU_REFMAC=%s ORDER BY BILPSEQU_DATESAISIE DESC",
+                (mac_refmac,),
+            )
+            last_decl = cur.fetchone()
+            order_ref = last_decl["OF_REFOF"] if last_decl else None
+
+            tool_row = None
+            if order_ref:
+                cur.execute(
+                    "SELECT TOP 1 o.OUT_REFOUT, u.OUT_LIBOUT, u.OUT_DATEMONTAGE "
+                    "FROM [OF] o LEFT JOIN OUTIL u ON u.OUT_REFOUT = o.OUT_REFOUT "
+                    "WHERE o.OF_REFOF=%s ORDER BY o.OF_DATELANCER DESC",
+                    (order_ref,),
+                )
+                tool_row = cur.fetchone()
         finally:
             conn.close()
     except pymssql.Error:
         log.warning("Cyclades dotaz na stav stroje %s selhal.", mac_refmac)
         return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
 
-    if not row:
-        return {"state": "bez_zakazky", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
+    if not events:
+        state, stop_reason, stop_cause, stop_duration_s = "neznamo", None, None, None
+    else:
+        latest = events[0]
+        running = latest["ARR_REFARRET"] == 255
+        state = "bezi" if running else "stoji"
+        stop_reason = None if running else latest["ARR_LIBARRET"]
+        stop_cause = None if running else latest["ARR_REFARRET"]
+        stop_duration_s = None if running else _duration_from_recent_events(
+            latest["ARR_REFARRET"], events, datetime.now(CYCLADES_TZ)
+        )
 
-    running = row["OF_CAUSEARRETCOURANT"] == -2 and (row["OF_DUREARRETCOURANT"] or 0) == 0
     return {
-        "state": "bezi" if running else "stoji",
-        "order_ref": row["OF_REFOF"],
-        "tool_ref": row["OUT_REFOUT"],
-        "tool_label": row["OUT_LIBOUT"],
-        "tool_mounted_since": _cyclades_local(row["OUT_DATEMONTAGE"]),
-        "stop_cause": row["OF_CAUSEARRETCOURANT"],
-        "stop_reason": None if running else row["ARR_LIBARRET"],
-        "stop_duration_s": row["OF_DUREARRETCOURANT"],
+        "state": state,
+        "order_ref": order_ref,
+        "tool_ref": tool_row["OUT_REFOUT"] if tool_row else None,
+        "tool_label": tool_row["OUT_LIBOUT"] if tool_row else None,
+        "tool_mounted_since": _cyclades_local(tool_row["OUT_DATEMONTAGE"]) if tool_row else None,
+        "stop_cause": stop_cause,
+        "stop_reason": stop_reason,
+        "stop_duration_s": stop_duration_s,
     }
 
 
@@ -518,8 +625,240 @@ def get_machine_status(machine_code, mac_refmac):
     return data
 
 
+def _unknown_status():
+    return {"state": "neznamo", "order_ref": None, "tool_ref": None, "tool_label": None, "tool_mounted_since": None}
+
+
+CYCLADES_STATUS_REFRESH_INTERVAL_SEC = 5
+# Pod timto oknem necinnosti dashboardu background loop Cyclades vubec
+# nedotazuje - neni duvod zatezovat produkcni DB, kdyz se nikdo nediva.
+CYCLADES_STATUS_IDLE_TIMEOUT_SEC = 60
+
+_last_status_request_ts = 0.0
+
+
+def _batch_query_machine_status(mac_refmacs):
+    """Stav (bezi/stoji, z HISTOEVENEMENTS) + aktualni zakazka (z posledni
+    smenove deklarace BILAN_SAISIE_EQUIPE) + nastroj k ni (z [OF]) +
+    posledni deklarovany stitek pro VSECHNY predane stroje v jedne MSSQL
+    konexi - pouziva background refresh loop, aby se produkcni Cyclades
+    DB nezatezovala N-krat vic nez je nutne. Bezi/stoji se bere z
+    HISTOEVENEMENTS (fyzicky stav stroje) a zakazka z BILAN_SAISIE_EQUIPE
+    (posledni realna vyrobni aktivita) - [OF]/OF_DATEFINOF se ZAMERNE
+    NEPOUZIVA pro zadne z toho, viz komentar u prvniho dotazu nize.
+    """
+    # CROSS APPLY + VALUES misto ROW_NUMBER() OVER (PARTITION BY ... WHERE
+    # ... IN (...)) - ten puvodni tvar donutil SQL Server sortovat/rankovat
+    # CELOU tabulku (HISTOEVENEMENTS ma historii za mesice/roky) pro vsech
+    # 20 stroju najednou a spolehlive to prekracovalo 5s query timeout
+    # (pymssql pak hlasi "DBPROCESS is dead"). CROSS APPLY dela pro kazdy
+    # stroj z VALUES presne to same "TOP 1 ... WHERE mac=@x ORDER BY ... DESC",
+    # co uz osvedcene rychle bezi v jednotlivych (single-machine) dotazech
+    # nize - jen v jednom volani/spojeni pro vsechny stroje najednou.
+    values_placeholders = ",".join(["(%s)"] * len(mac_refmacs))
+    conn = pymssql.connect(
+        server=CYCLADES_DB_HOST, user=CYCLADES_DB_USER, password=CYCLADES_DB_PASSWORD,
+        database="SUIVPRO", timeout=15, login_timeout=5,
+    )
+    try:
+        cur = conn.cursor(as_dict=True)
+        cur.execute(
+            "SELECT v.mac AS MAC_REFMAC, x.ARR_REFARRET, x.HISEVE_DATEEVE, t.ARR_LIBARRET "
+            f"FROM (VALUES {values_placeholders}) AS v(mac) "
+            "CROSS APPLY ("
+            "  SELECT TOP 1 h.ARR_REFARRET, h.HISEVE_DATEEVE FROM HISTOEVENEMENTS h "
+            "  WHERE h.HISEVE_REFMAC = v.mac ORDER BY h.HISEVE_DATEEVE DESC"
+            ") x "
+            "LEFT JOIN TYPES_ARRETS t ON t.ARR_REFARRET = x.ARR_REFARRET",
+            tuple(mac_refmacs),
+        )
+        event_rows = cur.fetchall()
+
+        # Aktualni zakazka (order_ref) se BERE Z POSLEDNI SMENOVE DEKLARACE
+        # (BILAN_SAISIE_EQUIPE), ne z [OF]/OF_DATEFINOF - overeno na datech
+        # 2026-09-18: OF_DATEFINOF u zakazky 0205881 na P220-005 byl
+        # nastaveny uz 3 minuty po spusteni (2026-09-11), ale realne
+        # smenove deklarace a LIGOF mnozstvi na ni bezely dal cely tyden
+        # (naposledy dnes 07:24) - OF_DATEFINOF tedy NEZNAMENA "vyroba
+        # skoncila", jen nejakou drivejsi administrativni udalost. [OF]
+        # se pouziva uz jen jako doplnek pro nastroj (forma) k teto zakazce.
+        cur.execute(
+            "SELECT v.mac AS BILPSEQU_REFMAC, x.BILPSEQU_REFETIQUETTE, x.OF_REFOF "
+            f"FROM (VALUES {values_placeholders}) AS v(mac) "
+            "CROSS APPLY ("
+            "  SELECT TOP 1 b.BILPSEQU_REFETIQUETTE, b.OF_REFOF FROM BILAN_SAISIE_EQUIPE b "
+            "  WHERE b.BILPSEQU_REFMAC = v.mac ORDER BY b.BILPSEQU_DATESAISIE DESC"
+            ") x",
+            tuple(mac_refmacs),
+        )
+        last_label_rows = cur.fetchall()
+        last_label_by_mac = {row["BILPSEQU_REFMAC"]: row for row in last_label_rows}
+        order_ref_by_mac = {mac: row["OF_REFOF"] for mac, row in last_label_by_mac.items() if row["OF_REFOF"]}
+
+        tool_by_mac = {}
+        if order_ref_by_mac:
+            pairs = list(order_ref_by_mac.items())
+            pair_placeholders = ",".join(["(%s,%s)"] * len(pairs))
+            pair_params = tuple(v for pair in pairs for v in pair)
+            cur.execute(
+                "SELECT v.mac AS MAC_REFMAC, x.OUT_REFOUT, u.OUT_LIBOUT, u.OUT_DATEMONTAGE "
+                f"FROM (VALUES {pair_placeholders}) AS v(mac, order_ref) "
+                "CROSS APPLY ("
+                "  SELECT TOP 1 o.OUT_REFOUT FROM [OF] o "
+                "  WHERE o.OF_REFOF = v.order_ref ORDER BY o.OF_DATELANCER DESC"
+                ") x "
+                "LEFT JOIN OUTIL u ON u.OUT_REFOUT = x.OUT_REFOUT",
+                pair_params,
+            )
+            tool_by_mac = {row["MAC_REFMAC"]: row for row in cur.fetchall()}
+
+        order_refs = sorted(set(order_ref_by_mac.values()))
+        worst_cavity_by_order = {}
+        if order_refs:
+            order_placeholders = ",".join(["%s"] * len(order_refs))
+            cur.execute(
+                "SELECT OF_REFOF, PROD_REFPROD, PROD_LIBPROD, LIGOF_RANGPRO, LIGOF_QTEBONNE, "
+                "LIGOF_QTEREBUT, LIGOF_TXTHEOREBUT FROM LIGOF "
+                f"WHERE OF_REFOF IN ({order_placeholders})",
+                tuple(order_refs),
+            )
+            cavities_by_order = {}
+            for r in cur.fetchall():
+                qty_good = float(r["LIGOF_QTEBONNE"] or 0)
+                qty_reject = float(r["LIGOF_QTEREBUT"] or 0)
+                qty_total = qty_good + qty_reject
+                pct = (qty_reject / qty_total * 100) if qty_total > 0 else None
+                cavities_by_order.setdefault(r["OF_REFOF"], []).append({
+                    "product": r["PROD_REFPROD"],
+                    "label": r["PROD_LIBPROD"],
+                    "cavity_no": r["LIGOF_RANGPRO"],
+                    "qty_good": qty_good,
+                    "qty_reject": qty_reject,
+                    "reject_pct": pct,
+                    "target_pct": float(r["LIGOF_TXTHEOREBUT"]) if r["LIGOF_TXTHEOREBUT"] is not None else None,
+                })
+            for order_ref, cavities in cavities_by_order.items():
+                with_pct = [c for c in cavities if c["reject_pct"] is not None]
+                worst_cavity_by_order[order_ref] = max(with_pct, key=lambda c: c["reject_pct"]) if with_pct else None
+    finally:
+        conn.close()
+
+    statuses = {}
+    worst_cavities = {}
+    for row in event_rows:
+        mac = row["MAC_REFMAC"]
+        order_ref = order_ref_by_mac.get(mac)
+        tool_row = tool_by_mac.get(mac)
+        running = row["ARR_REFARRET"] == 255
+        statuses[mac] = {
+            "state": "bezi" if running else "stoji",
+            "order_ref": order_ref,
+            "tool_ref": tool_row["OUT_REFOUT"] if tool_row else None,
+            "tool_label": tool_row["OUT_LIBOUT"] if tool_row else None,
+            "tool_mounted_since": _cyclades_local(tool_row["OUT_DATEMONTAGE"]) if tool_row else None,
+            "stop_cause": None if running else row["ARR_REFARRET"],
+            "stop_reason": None if running else row["ARR_LIBARRET"],
+            # Presna doba trvani by vyzadovala dalsi dotaz (historii vzorku)
+            # na kazdy stroj zvlast - v batch smycce (kazdych 5 s) se
+            # nevyplati, staci pro ni jednotlivy on-demand dotaz na
+            # machine.html (_query_cyclades_machine_status).
+            "stop_duration_s": None,
+        }
+        worst_cavities[mac] = worst_cavity_by_order.get(order_ref)
+    for mac in mac_refmacs:
+        statuses.setdefault(mac, _unknown_status())
+        worst_cavities.setdefault(mac, None)
+
+    return statuses, last_label_by_mac, worst_cavities
+
+
+def _batch_query_next_labels(last_labels):
+    """Dalsi stitek v poradi (ETQGPAO.ETQ_ENCOURS) pro kazdy stroj z
+    last_labels - jina Cyclades databaze (GPAO_PVL_SAP) nez status/labels
+    vyse, takze samostatna konexe, ale opet jen JEDNA pro vsechny stroje
+    (dotazy se jen strida na uz otevrenem spojeni, zadne nove connecty).
+    """
+    if not last_labels:
+        return {}
+    conn = pymssql.connect(
+        server=CYCLADES_DB_HOST, user=CYCLADES_DB_USER, password=CYCLADES_DB_PASSWORD,
+        database="GPAO_PVL_SAP", timeout=5, login_timeout=5,
+    )
+    next_labels = {}
+    try:
+        cur = conn.cursor(as_dict=True)
+        for mac, row in last_labels.items():
+            cur.execute(
+                "SELECT TOP 1 ETQ_ENCOURS FROM ETQGPAO WHERE OF_REFOF=%s AND %s BETWEEN ETQ_DEBUT AND ETQ_FIN",
+                (row["OF_REFOF"], row["BILPSEQU_REFETIQUETTE"]),
+            )
+            r = cur.fetchone()
+            next_labels[mac] = r["ETQ_ENCOURS"] if r else None
+    finally:
+        conn.close()
+    return next_labels
+
+
+def _refresh_all_machine_status():
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT machine_code, cyclades_mac_refmac FROM machines "
+            "WHERE active AND cyclades_mac_refmac IS NOT NULL"
+        )
+        machines = cur.fetchall()
+    if not machines:
+        return
+    mac_refmacs = [m["cyclades_mac_refmac"] for m in machines]
+    code_by_mac = {m["cyclades_mac_refmac"]: m["machine_code"] for m in machines}
+
+    try:
+        statuses, last_labels, worst_cavities = _batch_query_machine_status(mac_refmacs)
+    except pymssql.Error:
+        log.warning("Batch dotaz na stav stroju do Cyclades selhal, cache zustava stara.")
+        return
+
+    try:
+        next_labels = _batch_query_next_labels(last_labels)
+    except pymssql.Error:
+        log.warning("Batch dotaz na dalsi stitky do Cyclades selhal.")
+        next_labels = {}
+
+    now = time.time()
+    for mac, code in code_by_mac.items():
+        _status_cache[code] = {"data": statuses.get(mac, _unknown_status()), "ts": now}
+        label_row = last_labels.get(mac)
+        _label_cache[code] = {
+            "data": {
+                "last_label": label_row["BILPSEQU_REFETIQUETTE"] if label_row else None,
+                "next_label": next_labels.get(mac),
+            },
+            "ts": now,
+        }
+        _worst_cavity_cache[code] = {"data": worst_cavities.get(mac), "ts": now}
+
+
+async def _cyclades_status_refresh_loop():
+    while True:
+        try:
+            idle = (time.time() - _last_status_request_ts) >= CYCLADES_STATUS_IDLE_TIMEOUT_SEC
+            if pymssql and CYCLADES_DB_HOST and not idle:
+                await asyncio.to_thread(_refresh_all_machine_status)
+        except Exception:
+            log.exception("Chyba v cyclades_status_refresh_loop.")
+        await asyncio.sleep(CYCLADES_STATUS_REFRESH_INTERVAL_SEC)
+
+
 @app.get("/api/machines/status")
 def machines_status():
+    """Cte VYHRADNE z cache naplnene _cyclades_status_refresh_loop -
+    nikdy sama nevola Cyclades, takze odpoved je vzdy rychla i pro 20+
+    stroju. Bezprostredne po startu (nez background loop poprve dobehne)
+    vraci "neznamo"/prazdne stitky, dashboard se dotahne na dalsim pollu
+    (frontend polluje kazdych 5 s).
+    """
+    global _last_status_request_ts
+    _last_status_request_ts = time.time()
+
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT machine_code, machine_name, cyclades_mac_refmac FROM machines "
@@ -529,8 +868,9 @@ def machines_status():
 
     result = []
     for m in machines:
-        status = get_machine_status(m["machine_code"], m["cyclades_mac_refmac"])
-        labels = get_label_progress(m["machine_code"], m["cyclades_mac_refmac"])
+        status = (_status_cache.get(m["machine_code"]) or {}).get("data") or _unknown_status()
+        labels = (_label_cache.get(m["machine_code"]) or {}).get("data") or {"last_label": None, "next_label": None}
+        worst_cavity = (_worst_cavity_cache.get(m["machine_code"]) or {}).get("data")
         with get_conn() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT time, cycle_count, cycle_time_s FROM cycles "
@@ -545,79 +885,100 @@ def machines_status():
             **status,
             **labels,
             "latest_cycle": latest,
+            "worst_cavity_scrap": worst_cavity,
         })
     return result
 
 
-_machine_info_cache = {}  # mac_refmac -> {"data": {...}, "ts": float}
-MACHINE_INFO_CACHE_TTL_SEC = 300  # staticke udaje, staci obcas
+# Popisne udaje o stroji (typ/tonaz, dilna, sekce) se meni jen vyjimecne -
+# drzi se v lokalni Postgres tabulce `machines` (sloupce cyclades_label/
+# type_label/atelier/section/info_synced_at, viz postgres/init/16_*.sql),
+# synchronizovane na pozadi jednou za MACHINE_INFO_SYNC_INTERVAL_SEC. Endpoint
+# nize cte jen lokalni DB, zadny primy dotaz do Cyclades v request path.
+MACHINE_INFO_SYNC_INTERVAL_SEC = 6 * 3600
 
 
-def _query_cyclades_machine_info(mac_refmac):
-    """Popisne udaje o stroji z Cyclades master dat (SUIVPRO.dbo.MACHINE) -
-    typ/tonaz, dilna, sekce. Na rozdil od stavu (bezi/stoji) se toto meni
-    jen vyjimecne, proto delsi cache.
+def _sync_machine_info_to_db():
+    """Stahne popisne udaje o vsech strojich s namapovanym cyclades_mac_refmac
+    JEDNIM batch dotazem (jedna konexe, IN (...)) a ulozi je do lokalni
+    tabulky machines - misto opakovaneho tahani z produkcni Cyclades DB
+    pri kazdem zobrazeni detailu stroje.
     """
-    if not (pymssql and CYCLADES_DB_HOST and mac_refmac):
-        return None
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT machine_code, cyclades_mac_refmac FROM machines "
+            "WHERE cyclades_mac_refmac IS NOT NULL"
+        )
+        machines = cur.fetchall()
+    if not (machines and pymssql and CYCLADES_DB_HOST):
+        return
+    mac_refmacs = [m["cyclades_mac_refmac"] for m in machines]
+    placeholders = ",".join(["%s"] * len(mac_refmacs))
+
     try:
-        conn = pymssql.connect(
-            server=CYCLADES_DB_HOST,
-            user=CYCLADES_DB_USER,
-            password=CYCLADES_DB_PASSWORD,
-            database="SUIVPRO",
-            timeout=5,
-            login_timeout=5,
+        conn_ms = pymssql.connect(
+            server=CYCLADES_DB_HOST, user=CYCLADES_DB_USER, password=CYCLADES_DB_PASSWORD,
+            database="SUIVPRO", timeout=5, login_timeout=5,
         )
         try:
-            cur = conn.cursor(as_dict=True)
-            cur.execute(
+            cur_ms = conn_ms.cursor(as_dict=True)
+            cur_ms.execute(
                 "SELECT m.MAC_REFMAC, m.MAC_LIBMAC, m.ATEL_REFATEL, m.SEC_REFSEC, "
                 "t.TYPESMAC_LIB0 AS type_label "
                 "FROM MACHINE m "
                 "LEFT JOIN TYPES_MACHINE t ON t.TYPESMAC_TYPE = m.MAC_TYPEMAC "
-                "WHERE m.MAC_REFMAC=%s",
-                (mac_refmac,),
+                f"WHERE m.MAC_REFMAC IN ({placeholders})",
+                tuple(mac_refmacs),
             )
-            row = cur.fetchone()
+            info_by_mac = {r["MAC_REFMAC"]: r for r in cur_ms.fetchall()}
         finally:
-            conn.close()
+            conn_ms.close()
     except pymssql.Error:
-        log.warning("Cyclades dotaz na info o stroji %s selhal.", mac_refmac)
-        return None
-    return row
+        log.warning("Batch sync popisnych udaju stroju z Cyclades selhal.")
+        return
+
+    now = datetime.now(timezone.utc)
+    with get_conn() as conn, conn.cursor() as cur:
+        for m in machines:
+            info = info_by_mac.get(m["cyclades_mac_refmac"])
+            cur.execute(
+                "UPDATE machines SET cyclades_label=%s, type_label=%s, atelier=%s, section=%s, info_synced_at=%s "
+                "WHERE machine_code=%s",
+                (
+                    info["MAC_LIBMAC"] if info else None,
+                    info["type_label"] if info else None,
+                    info["ATEL_REFATEL"] if info else None,
+                    info["SEC_REFSEC"] if info else None,
+                    now,
+                    m["machine_code"],
+                ),
+            )
+        conn.commit()
 
 
-def get_machine_info(mac_refmac):
-    now = time.time()
-    cached = _machine_info_cache.get(mac_refmac)
-    if cached and now - cached["ts"] < MACHINE_INFO_CACHE_TTL_SEC:
-        return cached["data"]
-    data = _query_cyclades_machine_info(mac_refmac)
-    _machine_info_cache[mac_refmac] = {"data": data, "ts": now}
-    return data
+async def _machine_info_sync_loop():
+    await asyncio.sleep(10)  # nech API doraznout, nez poprve sahne na Cyclades
+    while True:
+        try:
+            if pymssql and CYCLADES_DB_HOST:
+                await asyncio.to_thread(_sync_machine_info_to_db)
+        except Exception:
+            log.exception("Chyba v machine_info_sync_loop.")
+        await asyncio.sleep(MACHINE_INFO_SYNC_INTERVAL_SEC)
 
 
 @app.get("/api/machines/info")
 def machine_info(machine: str):
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT machine_code, machine_name, cyclades_mac_refmac FROM machines WHERE machine_code=%s",
+            "SELECT machine_code, machine_name, cyclades_mac_refmac, cyclades_label, "
+            "type_label, atelier, section FROM machines WHERE machine_code=%s",
             (machine,),
         )
         row = cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Neznamy stroj.")
-    info = get_machine_info(row["cyclades_mac_refmac"]) if row["cyclades_mac_refmac"] else None
-    return {
-        "machine_code": row["machine_code"],
-        "machine_name": row["machine_name"],
-        "cyclades_mac_refmac": row["cyclades_mac_refmac"],
-        "cyclades_label": info["MAC_LIBMAC"] if info else None,
-        "type_label": info["type_label"] if info else None,
-        "atelier": info["ATEL_REFATEL"] if info else None,
-        "section": info["SEC_REFSEC"] if info else None,
-    }
+    return row
 
 
 # ────────────────────────────────────────────────────────────
@@ -704,6 +1065,8 @@ async def _poll_and_broadcast_loop():
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(_poll_and_broadcast_loop())
+    asyncio.create_task(_cyclades_status_refresh_loop())
+    asyncio.create_task(_machine_info_sync_loop())
 
 
 _cavity_scrap_cache = {}  # (machine_code, order_ref) -> {"data": [...], "ts": float}

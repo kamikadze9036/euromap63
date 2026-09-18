@@ -79,6 +79,31 @@
     });
   }
 
+  function fmtPct(n, digits) {
+    if (n === null || n === undefined || Number.isNaN(n)) return null;
+    return Number(n).toFixed(digits === undefined ? 1 : digits) + " %";
+  }
+
+  // Radek se vykresli jen kdyz ma hodnotu - u 19 stroju bez vlastniho
+  // EUROMAP63 sberu (cyklus/doba cyklu) a bez aktivni zakazky/formy/
+  // zmetkovitosti to karty prirozene zkrati, misto aby byly plne pomlcek.
+  function mcRow(label, value, extraClass) {
+    if (value === null || value === undefined || value === "") return "";
+    return '<div class="mc-row"><span class="mc-label">' + escapeHtml(label) + '</span>' +
+      '<span class="mc-value' + (extraClass ? " " + extraClass : "") + '">' + value + '</span></div>';
+  }
+
+  function worstCavityValue(m) {
+    var w = m.worst_cavity_scrap;
+    if (!w || w.reject_pct === null || w.reject_pct === undefined) return null;
+    var overTarget = w.target_pct !== null && w.target_pct !== undefined && w.reject_pct > w.target_pct;
+    var text = escapeHtml(fmtPct(w.reject_pct));
+    if (w.target_pct !== null && w.target_pct !== undefined) {
+      text += ' <span class="muted">(cíl ' + escapeHtml(fmtPct(w.target_pct)) + ')</span>';
+    }
+    return { text: text, danger: overTarget };
+  }
+
   function renderGrid(machines) {
     gridEl.innerHTML = "";
     if (!machines.length) {
@@ -92,26 +117,23 @@
       a.id = cardId(m.machine_code);
 
       var latest = m.latest_cycle || {};
-      var stopRow = "";
-      if (m.state === "stoji") {
-        stopRow =
-          '<div class="machine-card__metric machine-card__metric--wide"><span class="mc-label">Důvod prostoje</span><span class="mc-value mc-value--reason">' +
-          escapeHtml(m.stop_reason || "neurčeno") + ' (' + fmtDuration(m.stop_duration_s) + ')</span></div>';
-      }
+      var cavity = worstCavityValue(m);
+
+      var rows =
+        mcRow("WO", m.order_ref ? escapeHtml(m.order_ref) : null) +
+        mcRow("Forma", m.tool_ref ? escapeHtml(formatTool(m)) : null) +
+        mcRow("CT", latest.cycle_time_s !== undefined && latest.cycle_time_s !== null ? '<span data-field="cycle_time_s">' + fmt(latest.cycle_time_s) + ' s</span>' : null) +
+        mcRow("Posl. št.", m.last_label ? escapeHtml(m.last_label) : null) +
+        mcRow("Další št.", m.next_label ? escapeHtml(m.next_label) : null) +
+        mcRow("Zmetk.", cavity ? cavity.text : null, cavity && cavity.danger ? "mc-value--danger" : null) +
+        mcRow("Prostoj", m.state === "stoji" ? escapeHtml(m.stop_reason || "neurčeno") + (m.stop_duration_s ? " (" + escapeHtml(fmtDuration(m.stop_duration_s)) + ")" : "") : null, "mc-value--reason");
+
       a.innerHTML =
         '<div class="machine-card__head">' +
           '<span class="machine-card__name">' + escapeHtml(m.cyclades_mac_refmac || m.machine_name || m.machine_code) + '</span>' +
           '<span class="machine-card__state">' + (STATE_LABELS[m.state] || m.state || "–") + '</span>' +
         '</div>' +
-        '<div class="machine-card__body">' +
-          '<div class="machine-card__metric"><span class="mc-label">Cyklus</span><span class="mc-value" data-field="cycle_count">' + (latest.cycle_count || "–") + '</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Doba cyklu</span><span class="mc-value" data-field="cycle_time_s">' + fmt(latest.cycle_time_s) + ' s</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Zakázka</span><span class="mc-value">' + escapeHtml(m.order_ref || "–") + '</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Forma</span><span class="mc-value">' + escapeHtml(formatTool(m)) + '</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Poslední štítek</span><span class="mc-value">' + escapeHtml(m.last_label || "–") + '</span></div>' +
-          '<div class="machine-card__metric"><span class="mc-label">Další štítek</span><span class="mc-value">' + escapeHtml(m.next_label || "–") + '</span></div>' +
-          stopRow +
-        '</div>';
+        '<div class="machine-card__body">' + rows + '</div>';
       gridEl.appendChild(a);
     });
   }

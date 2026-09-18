@@ -80,6 +80,10 @@ main {
   margin: 0 auto;
 }
 
+/* Hala dashboard chce vyuzit celou sirku sirokouhleho monitoru (vic
+   sloupcu karet = min radku = vic karet najednou bez scrollovani). */
+main.main--wide { max-width: none; }
+
 .content-grid {
   display: flex;
   flex-direction: column;
@@ -501,12 +505,14 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
 
 .muted { color: var(--muted); }
 
+/* Zadny max-width - na sirokouhlem monitoru se ma vyuzit cela sirka
+   (viz pozadavek "20 karet na jednu FHD stranku"). auto-fill + minmax
+   samo od sebe preskladava sloupce pri zmene sirky okna (zadny JS
+   potreba). */
 .machine-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 14px;
-  max-width: 1200px;
-  margin: 0 auto;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
   width: 100%;
 }
 
@@ -514,9 +520,9 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   display: block;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-left: 6px solid var(--muted);
-  border-radius: 10px;
-  padding: 14px 16px;
+  border-left: 5px solid var(--muted);
+  border-radius: 8px;
+  padding: 8px 10px;
   text-decoration: none;
   color: var(--text);
   transition: transform 0.1s ease;
@@ -561,23 +567,44 @@ td.num { font-variant-numeric: tabular-nums; text-align: right; }
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  margin-bottom: 10px;
+  gap: 6px;
+  margin-bottom: 4px;
 }
-.machine-card__name { font-weight: 700; font-size: 1.05rem; }
-.machine-card__state { font-size: 0.8rem; color: var(--muted); font-weight: 600; }
+.machine-card__name { font-weight: 700; font-size: 1.1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.machine-card__state { font-size: 0.68rem; color: var(--muted); font-weight: 600; white-space: nowrap; }
 .state--bezi .machine-card__state { color: var(--ok); }
 .state--stoji .machine-card__state { color: var(--warn); }
 
-.machine-card__body {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+/* Jeden radek na polozku - zkusil jsem drive 2-sloupcou mrizku (spárovane
+   kratke polozky vedle sebe), ale u cisel jako cisla stitku/zakazky (8-9
+   znaku) v poloviny sirky karty orezavala hodnotu na "20588..." misto
+   aby byla citelna. Kratke popisky (WO/CT/Zmetk./Posl. st./Dalsi st.)
+   samy o sobe kartu dost zhusti i po jedne na radek - 20 karet se na FHD
+   stranku porad vejde s velkou rezervou. Chybejici polozky se v JS vubec
+   nevykresli (setri misto hlavne u 19 stroju bez vlastniho EUROMAP63
+   cyklove sberu). */
+.machine-card__body { display: flex; flex-direction: column; gap: 1px; }
+.mc-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  min-width: 0;
 }
-.machine-card__metric { display: flex; flex-direction: column; }
-.machine-card__metric--wide { grid-column: 1 / -1; }
-.mc-label { font-size: 0.72rem; color: var(--muted); }
-.mc-value { font-size: 1.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.mc-value--reason { font-size: 0.95rem; color: var(--warn); font-variant-numeric: normal; }
+.mc-row .mc-label { flex-shrink: 0; color: var(--muted); }
+.mc-row .mc-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.mc-row .mc-value--reason { color: var(--warn); font-variant-numeric: normal; }
+.mc-row .mc-value--danger { color: var(--err); }
 
 .nav-link {
   color: var(--accent);
