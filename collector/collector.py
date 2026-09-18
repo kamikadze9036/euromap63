@@ -35,7 +35,7 @@ import json
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 
@@ -241,6 +241,46 @@ def merge_wrapped_lines(lines):
     return merged
 
 
+def reconstruct_occurred_at(rows, received_at):
+    """Best-effort rekonstrukce skutecneho casu vzniku kazdeho cyklu v ramci
+    jedne davky (jeden poll REPORTS.DAT) - viz MES_TARGET_ARCHITECTURE.md
+    §5.1 a MES_IMPLEMENTATION_BACKLOG.md tiket 1.1/1.2.
+
+    Stroj v teto konfiguraci neposkytuje spolehlivy vlastni cas, takze se
+    postupuje zpetne od "received_at" (cas, kdy collector davku precetl):
+    nejnovejsi (posledni) cyklus v davce se ukotvi na received_at a kazdy
+    predchozi cyklus se odvodi tak, ze od casu cyklu za nim odecte VLASTNI
+    cycle_time_s ("kazdy cyklus nastal cycle_time_s sekund pred tim
+    nasledujicim v poradi").
+
+    Parametry:
+      rows         - list dictu v chronologickem poradi (nejstarsi prvni,
+                     presne jako v REPORTS.DAT), kazdy alespon s klicem
+                     "cycle_time_s" (float nebo None).
+      received_at  - datetime (tz-aware), cas prijeti/precteni cele davky.
+
+    Vraci list dvojic (occurred_at, occurred_at_source) stejne delky a
+    poradi jako "rows". Kdyz radku chybi cycle_time_s (jiz dnes osetreny
+    warning pripad - viz vyse "Radek bez platneho ActTimCyc"), nelze pro
+    nej rekonstrukci provest a pouzije se fallback occurred_at=received_at,
+    occurred_at_source='received_at_fallback'.
+    """
+    n = len(rows)
+    results = [None] * n
+    for i in range(n - 1, -1, -1):
+        cycle_time = rows[i].get("cycle_time_s")
+        if i == n - 1:
+            occurred_at = received_at
+        elif cycle_time is not None:
+            occurred_at = results[i + 1][0] - timedelta(seconds=cycle_time)
+        else:
+            occurred_at = received_at
+
+        source = "reconstructed_from_cycle_time" if cycle_time is not None else "received_at_fallback"
+        results[i] = (occurred_at, source)
+    return results
+
+
 def read_new_cycles(conn):
     if not os.path.exists(REPORTS_DAT):
         return 0
@@ -279,34 +319,62 @@ def read_new_cycles(conn):
 
     new_lines = data_lines[last_count:]
     order_ref = get_active_order()
+
+    # Cas precteni cele davky - zachycen jednou za poll, ne per-radek (viz
+    # MES_IMPLEMENTATION_BACKLOG.md tiket 1.1). Pouziva se jak jako
+    # received_at, tak jako kotva pro zpetnou rekonstrukci occurred_at.
+    received_at = datetime.now(timezone.utc)
+
+    parsed_rows = []
+    for line in new_lines:
+        values = split_csv_line(line)
+        if len(values) != len(header):
+            log.warning("Preskakuji poskozeny radek REPORTS.DAT: %r", line)
+            continue
+        row = dict(zip(header, values))
+        try:
+            cycle_count = int(float(row.get("ActCntCyc", "nan")))
+        except ValueError:
+            log.warning("Radek bez platneho ActCntCyc, preskakuji: %r", line)
+            continue
+        try:
+            cycle_time = float(row["ActTimCyc"]) if row.get("ActTimCyc") else None
+        except ValueError:
+            cycle_time = None
+
+        parsed_rows.append({
+            "cycle_count": cycle_count,
+            "cycle_time_s": cycle_time,
+            "params": row,
+        })
+
+    occurred = reconstruct_occurred_at(parsed_rows, received_at)
+
     inserted = 0
     with conn.cursor() as cur:
-        for line in new_lines:
-            values = split_csv_line(line)
-            if len(values) != len(header):
-                log.warning("Preskakuji poskozeny radek REPORTS.DAT: %r", line)
-                continue
-            row = dict(zip(header, values))
-            try:
-                cycle_count = int(float(row.get("ActCntCyc", "nan")))
-            except ValueError:
-                log.warning("Radek bez platneho ActCntCyc, preskakuji: %r", line)
-                continue
-            try:
-                cycle_time = float(row["ActTimCyc"]) if row.get("ActTimCyc") else None
-            except ValueError:
-                cycle_time = None
-
+        for parsed, (occurred_at, occurred_at_source) in zip(parsed_rows, occurred):
             # Zadny ON CONFLICT - tabulka cycles nema unique constraint na
             # (machine_code, cycle_count), protoze TimescaleDB vyzaduje, aby
             # unique/PK vzdy obsahoval partitioning sloupec "time". Dedup
             # reseni je atomicka transakce + reports_lines_read nize.
             cur.execute(
                 """
-                INSERT INTO cycles (machine_code, cycle_count, cycle_time_s, order_ref, params)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO cycles (
+                    machine_code, cycle_count, cycle_time_s, order_ref, params,
+                    received_at, occurred_at, occurred_at_source
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (MACHINE_CODE, cycle_count, cycle_time, order_ref, json.dumps(row)),
+                (
+                    MACHINE_CODE,
+                    parsed["cycle_count"],
+                    parsed["cycle_time_s"],
+                    order_ref,
+                    json.dumps(parsed["params"]),
+                    received_at,
+                    occurred_at,
+                    occurred_at_source,
+                ),
             )
             inserted += 1
 
