@@ -17,10 +17,16 @@ import pytest
 psycopg2 = pytest.importorskip("psycopg2")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
+if not DATABASE_URL or getattr(psycopg2, "_is_stub", False):
+    # conftest.py's os.environ.setdefault() means DATABASE_URL is never
+    # actually falsy, and its stub module (when no real driver is
+    # installed) IS importable - so without the "_is_stub" check,
+    # a sandbox with no psycopg2 install would hit NotImplementedError
+    # from every fixture instead of cleanly skipping this whole module.
     pytest.skip(
-        "DATABASE_URL neni nastaveno - nastav ho na skutecnou "
-        "Postgres/TimescaleDB instanci se schematem z postgres/init/ "
+        "DATABASE_URL neni nastaveno na skutecnou Postgres/TimescaleDB "
+        "instanci (nebo psycopg2 tady neni realne nainstalovany) - "
+        "nastav ho a spust proti DB se schematem z postgres/init/ "
         "pro spusteni techto integracnich testu.",
         allow_module_level=True,
     )

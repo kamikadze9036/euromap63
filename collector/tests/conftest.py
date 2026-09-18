@@ -35,6 +35,9 @@ if "psycopg2" not in sys.modules:
         class _Error(Exception):
             pass
 
+        class _OperationalError(_Error):
+            pass
+
         def _connect(*_args, **_kwargs):
             raise NotImplementedError(
                 "psycopg2 is stubbed out for unit tests - no real DB connection "
@@ -42,5 +45,12 @@ if "psycopg2" not in sys.modules:
             )
 
         fake_psycopg2.Error = _Error
+        fake_psycopg2.OperationalError = _OperationalError
         fake_psycopg2.connect = _connect
+        # test_integration_real_db.py's `pytest.importorskip("psycopg2")`
+        # would otherwise succeed against this stub (it IS importable) and
+        # os.environ.setdefault() above means DATABASE_URL is never falsy
+        # either - without this marker, that whole module errors instead of
+        # cleanly skipping whenever no real driver is installed.
+        fake_psycopg2._is_stub = True
         sys.modules["psycopg2"] = fake_psycopg2
