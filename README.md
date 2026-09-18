@@ -112,7 +112,7 @@ záměrně nevylučují:
   (staging/produkce na `spc-vm`, nebo dev DB po prvním initu). Jediná
   baseline revize (`alembic/versions/0001_baseline_squash_postgres_init.py`)
   přehrává přesně `postgres/init/01_schema.sql` až
-  `20_add_collector_heartbeat.sql`, takže `alembic upgrade head` nad
+  `21_add_reports_dat_archive.sql`, takže `alembic upgrade head` nad
   prázdnou DB dá stejné schéma jako dnešní `docker-entrypoint-initdb.d`.
 
 **Nová změna schématu od teď = nová Alembic revize

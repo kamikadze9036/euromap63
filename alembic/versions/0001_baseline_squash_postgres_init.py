@@ -1,4 +1,4 @@
-"""baseline: squash postgres/init/01_schema.sql .. 20_add_collector_heartbeat.sql
+"""baseline: squash postgres/init/01_schema.sql .. 21_add_reports_dat_archive.sql
 
 Revision ID: 0001_baseline
 Revises:
@@ -8,8 +8,8 @@ Create Date: 2026-09-18
  WHAT THIS IS
 ============================================================================
 This is a single baseline revision representing the FULL schema produced by
-running postgres/init/01_schema.sql through postgres/init/20_add_collector_
-heartbeat.sql, in order, against an empty database - which is exactly what
+running postgres/init/01_schema.sql through postgres/init/21_add_reports_dat_
+archive.sql, in order, against an empty database - which is exactly what
 docker-entrypoint-initdb.d does today for a brand-new dev/local Postgres
 container (see docker-compose.yml, `postgres` service, and
 alembic/env.py for the fuller explanation of why both mechanisms exist).
@@ -45,7 +45,7 @@ highest-risk part of ticket 1.9 - read that file before touching spc-vm.
 ============================================================================
  VERIFICATION STATUS
 ============================================================================
-This migration's equivalence to running postgres/init/01..20 in order on a
+This migration's equivalence to running postgres/init/01..21 in order on a
 fresh database has NOT been verified against a real Postgres/TimescaleDB
 instance in the sandbox this revision was written in (no Docker / working
 psycopg2 available there). It has only been checked for Python/SQL syntax
@@ -685,6 +685,27 @@ ALTER TABLE collector_state
     ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
 """
 
+# ---------------------------------------------------------------------------
+# postgres/init/21_add_reports_dat_archive.sql
+# (landed on main via ticket 1.5 after this baseline was first drafted -
+#  added here so the baseline stays a true squash of main's full schema
+#  at merge time, not a snapshot frozen at this branch's fork point.)
+# ---------------------------------------------------------------------------
+SQL_21_ADD_REPORTS_DAT_ARCHIVE = r"""
+CREATE TABLE IF NOT EXISTS reports_dat_archive (
+    id              BIGSERIAL PRIMARY KEY,
+    machine_code    TEXT NOT NULL REFERENCES machines(machine_code),
+    archived_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    archive_path    TEXT NOT NULL,
+    sha256          TEXT NOT NULL,
+    line_count      INTEGER NOT NULL,
+    size_bytes      BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reports_dat_archive_machine_time
+    ON reports_dat_archive (machine_code, archived_at DESC);
+"""
+
 # Ordered exactly as postgres/init/ numbers them - this order matters (later
 # blocks assume earlier ones already ran, e.g. 04/05/13/14 update rows
 # inserted by 02/03).
@@ -709,6 +730,7 @@ _ALL_BLOCKS_IN_ORDER = (
     SQL_18_ADD_CYCLE_IDENTITY,
     SQL_19_ADD_CHECKPOINT_INTEGRITY,
     SQL_20_ADD_COLLECTOR_HEARTBEAT,
+    SQL_21_ADD_REPORTS_DAT_ARCHIVE,
 )
 
 
@@ -735,6 +757,7 @@ def downgrade() -> None:
     must never be run against spc-vm.
     """
     connection = op.get_bind()
+    connection.exec_driver_sql("DROP TABLE IF EXISTS reports_dat_archive;")
     connection.exec_driver_sql("DROP TABLE IF EXISTS cycle_identity;")
     connection.exec_driver_sql("DROP TABLE IF EXISTS collector_state;")
     connection.exec_driver_sql("DROP TABLE IF EXISTS cycles;")

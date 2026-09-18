@@ -17,8 +17,8 @@ coexist, each with a distinct job:
     FROM THIS POINT FORWARD, for a database that already exists - i.e.
     staging/production (spc-vm), or a local dev DB after its first init.
     The single baseline revision (see alembic/versions/) squashes
-    postgres/init/01_schema.sql through 20_add_collector_heartbeat.sql (the
-    full set as of this ticket) into one Alembic revision, so that running
+    postgres/init/01_schema.sql through 21_add_reports_dat_archive.sql (the
+    full set as of this merge) into one Alembic revision, so that running
     `alembic upgrade head` against a fresh, empty database produces the same
     schema as letting docker-entrypoint-initdb.d run all the numbered SQL
     files in order.
@@ -33,7 +33,7 @@ coexist, each with a distinct job:
  CRITICAL - adopting Alembic on an already-existing database (spc-vm prod)
 ============================================================================
 The production database on spc-vm already has the full schema (through
-postgres/init/20_add_collector_heartbeat.sql, applied by hand via
+postgres/init/21_add_reports_dat_archive.sql, applied by hand via
 `docker exec ... psql -f ...`, NOT via Alembic). The first time Alembic is
 pointed at that database, someone MUST run:
 

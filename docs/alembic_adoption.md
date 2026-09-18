@@ -19,7 +19,7 @@ production database on `spc-vm`.** Read this in full before running any
 
 The single baseline revision `alembic/versions/0001_baseline_squash_postgres_init.py`
 replays the exact SQL text of `postgres/init/01_schema.sql` through
-`postgres/init/20_add_collector_heartbeat.sql`, in order, so that
+`postgres/init/21_add_reports_dat_archive.sql`, in order, so that
 `alembic upgrade head` against an empty database produces the same schema as
 letting `docker-entrypoint-initdb.d` run today.
 
@@ -29,7 +29,7 @@ letting `docker-entrypoint-initdb.d` run today.
 |---|---|---|
 | Fresh dev/local (new `pgdata` volume) | Nothing yet | Either let `docker-entrypoint-initdb.d` run as today, **or** start empty and run `alembic upgrade head` — both should converge on the same schema (see "Verification" below — this has *not* been proven against a real DB yet) |
 | An existing dev/local DB that already ran `postgres/init/*.sql` via `docker-entrypoint-initdb.d` | Has the full schema, not tracked by Alembic | `alembic stamp head` (never `upgrade`) |
-| **`spc-vm` production** | Has the full schema through migration 20 (possibly 21 if ticket 1.5 landed one — check `postgres/init/` for a `21_*.sql` before doing anything), applied by hand via `docker exec ... psql -f postgres/init/NN_*.sql`. **Not** tracked by Alembic. | `alembic stamp head` (never `upgrade`) |
+| **`spc-vm` production** | Has the full schema through migration 21 (`reports_dat_archive`, ticket 1.5 — already folded into this baseline), applied by hand via `docker exec ... psql -f postgres/init/NN_*.sql`. **Not** tracked by Alembic. | `alembic stamp head` (never `upgrade`) |
 
 ## THE rule
 
@@ -150,7 +150,7 @@ unilaterally inside this ticket.
 ## Verification status (read this before trusting any of the above)
 
 This baseline migration's equivalence to running `postgres/init/01_schema.sql`
-through `20_add_collector_heartbeat.sql` in order has **not** been verified
+through `21_add_reports_dat_archive.sql` in order has **not** been verified
 against a real Postgres/TimescaleDB instance — the sandbox this was written
 in has no Docker and no working `psycopg2`/`alembic`/`SQLAlchemy` install
 (confirmed: `import sqlalchemy` fails; `import alembic` silently resolves to
