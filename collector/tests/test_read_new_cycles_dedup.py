@@ -45,7 +45,10 @@ class FakeDB:
     """
 
     def __init__(self):
-        self.collector_state = {}  # machine_code -> reports_lines_read
+        # machine_code -> {"reports_lines_read", "last_line_hash",
+        # "reports_dat_size_at_checkpoint"} (ticket 1.4, see
+        # postgres/init/19_add_checkpoint_integrity.sql).
+        self.collector_state = {}
         self.cycle_identity = set()  # {(machine_code, cycle_count)}
         self.cycles = []  # list of dict rows "inserted" into cycles
 
@@ -71,9 +74,14 @@ class FakeCursor:
     def execute(self, sql, params=()):
         sql_n = self._norm(sql)
 
-        if sql_n.startswith("SELECT reports_lines_read FROM collector_state"):
+        if sql_n.startswith("SELECT reports_lines_read, last_line_hash,"):
             (machine_code,) = params
-            self._result = (self.db.collector_state.get(machine_code, 0),)
+            state = self.db.collector_state.get(machine_code, {})
+            self._result = (
+                state.get("reports_lines_read", 0),
+                state.get("last_line_hash"),
+                state.get("reports_dat_size_at_checkpoint"),
+            )
 
         elif sql_n.startswith("SELECT MAX(cycle_count) FROM cycle_identity"):
             (machine_code,) = params
@@ -104,9 +112,25 @@ class FakeCursor:
             })
             self._result = None
 
+        elif sql_n.startswith("UPDATE collector_state SET reports_lines_read=0,"):
+            # maybe_rotate()'s own intentional reset - not exercised by
+            # read_new_cycles tests below, kept here for completeness/any
+            # future maybe_rotate test.
+            (machine_code,) = params
+            self.db.collector_state[machine_code] = {
+                "reports_lines_read": 0,
+                "last_line_hash": None,
+                "reports_dat_size_at_checkpoint": None,
+            }
+            self._result = None
+
         elif sql_n.startswith("UPDATE collector_state SET reports_lines_read"):
-            reports_lines_read, machine_code = params
-            self.db.collector_state[machine_code] = reports_lines_read
+            reports_lines_read, last_line_hash, reports_dat_size, machine_code = params
+            self.db.collector_state[machine_code] = {
+                "reports_lines_read": reports_lines_read,
+                "last_line_hash": last_line_hash,
+                "reports_dat_size_at_checkpoint": reports_dat_size,
+            }
             self._result = None
 
         else:
@@ -159,7 +183,7 @@ def test_new_batch_inserts_identity_and_cycle_rows_for_every_row():
     assert db.cycle_identity == {
         ("KM-MC5-TEST", 100), ("KM-MC5-TEST", 101), ("KM-MC5-TEST", 102),
     }
-    assert db.collector_state["KM-MC5-TEST"] == 3
+    assert db.collector_state["KM-MC5-TEST"]["reports_lines_read"] == 3
     assert conn.committed == 1
 
 
@@ -183,7 +207,7 @@ def test_replayed_batch_is_fully_deduplicated_no_new_cycles_rows():
     assert db.cycles == []
     # Checkpoint still advances - reports_lines_read is a read-position
     # optimization, not the dedup mechanism.
-    assert db.collector_state["KM-MC5-TEST"] == 3
+    assert db.collector_state["KM-MC5-TEST"]["reports_lines_read"] == 3
 
 
 def test_overlapping_batch_only_inserts_genuinely_new_rows():
