@@ -66,6 +66,17 @@ CYCLADES_CACHE_TTL_SEC = 5
 
 _cyclades_cache = {"order_ref": None, "checked_at": 0.0}
 
+# Ticket 1.7 (MES_IMPLEMENTATION_BACKLOG.md / MES_TARGET_ARCHITECTURE.md
+# §5.2): last order_ref this process has recorded as the open interval in
+# order_assignments for MACHINE_CODE. Distinct from _cyclades_cache above -
+# that one throttles how often Cyclades itself gets queried; this one is
+# "what did we last WRITE to order_assignments", used purely to detect an
+# actual change worth writing (see _sync_order_assignment()). A sentinel
+# (not None) marks "this process hasn't looked yet" because None is itself
+# a legitimate observed value (machine idle / no active order).
+_UNOBSERVED = object()
+_last_written_order_ref = {"value": _UNOBSERVED}
+
 REPORTS_DAT = os.path.join(FTP_ROOT, "REPORTS.DAT")
 REPORTS_LOG = os.path.join(FTP_ROOT, "REPORTS.LOG")
 
@@ -174,11 +185,18 @@ def split_csv_line(line):
     return fields
 
 
-def get_active_order():
+def get_active_order(conn):
     """Vrati OF_REFOF (cislo zakazky) aktualne bezici na CYCLADES_MAC_REFMAC,
     nebo None. Vysledek se cachuje na CYCLADES_CACHE_TTL_SEC, aby se sdilena
     tovarni MES databaze nedotazovala pri kazdem pollu REPORTS.DAT. Pri chybe
     spojeni vraci posledni znamou hodnotu misto shozeni cele smycky.
+
+    "conn" (lokalni Postgres spojeni, tiket 1.7) se pouziva jen k
+    volitelnemu zapisu do order_assignments, kdyz se pozorovana hodnota
+    zmeni - viz _sync_order_assignment(). Navratova hodnota teto funkce uz
+    NENI to, co se stampuje na cely poll v read_new_cycles() (viz tam) -
+    slouzi uz jen jako "aktualne pozorovana zakazka" pro pripadny volajici,
+    ktery to potrebuje vedet hned.
     """
     if not (pymssql and CYCLADES_DB_HOST and CYCLADES_MAC_REFMAC):
         return None
@@ -188,7 +206,7 @@ def get_active_order():
         return _cyclades_cache["order_ref"]
 
     try:
-        conn = pymssql.connect(
+        cyclades_conn = pymssql.connect(
             server=CYCLADES_DB_HOST,
             user=CYCLADES_DB_USER,
             password=CYCLADES_DB_PASSWORD,
@@ -197,7 +215,7 @@ def get_active_order():
             login_timeout=5,
         )
         try:
-            cur = conn.cursor()
+            cur = cyclades_conn.cursor()
             cur.execute(
                 "SELECT TOP 1 OF_REFOF FROM [OF] WHERE MAC_REFMAC=%s "
                 "AND OF_DATEFINOF IS NULL ORDER BY OF_DATELANCER DESC",
@@ -206,12 +224,132 @@ def get_active_order():
             row = cur.fetchone()
             _cyclades_cache["order_ref"] = row[0] if row else None
         finally:
-            conn.close()
+            cyclades_conn.close()
     except Exception:
         log.warning("Cyclades dotaz na aktivni OF selhal, pouzivam posledni znamou hodnotu (%r).", _cyclades_cache["order_ref"])
 
     _cyclades_cache["checked_at"] = now
+
+    # "Observation time" - okamzik, kdy COLLECTOR zjistil tuto hodnotu, ne
+    # skutecny okamzik zmeny na strane Cyclades (viz docstring
+    # _sync_order_assignment nize a MES_IMPLEMENTATION_BACKLOG.md tiket 1.7).
+    _sync_order_assignment(conn, _cyclades_cache["order_ref"], datetime.now(timezone.utc))
+
     return _cyclades_cache["order_ref"]
+
+
+def _sync_order_assignment(conn, observed_order_ref, observed_at):
+    """Zaznamena do order_assignments zmenu POZOROVANE aktivni zakazky pro
+    MACHINE_CODE - ale jen kdyz se skutecne zmenila oproti tomu, co tento
+    proces naposledy zapsal (ne pri kazdem volani, viz _last_written_order_ref
+    vyse). Tiket 1.7 / MES_TARGET_ARCHITECTURE.md §5.2.
+
+    Prvni volani v zivote procesu (_last_written_order_ref je jeste
+    _UNOBSERVED - napr. po restartu kontejneru): misto slepeho otevreni
+    noveho intervalu se nejdriv podivame do DB, jestli uz nejaky otevreny
+    interval pro tenhle stroj existuje. Pokud ano a odpovida tomu, co jsme
+    prave pozorovali, jen ho prevezmeme do pameti a nic nezapisujeme -
+    zabranime tak zbytecnemu (a matoucimu) noveho radku v order_assignments
+    pri kazdem restartu collectoru, kdy se realna zakazka vubec nezmenila.
+    Pokud zadny otevreny interval neexistuje (uplne prvni pozorovani v
+    historii stroje), jen otevreme novy - neni co zavirat.
+
+    order_ref=None je legitimni, potvrzena hodnota ("stroj bezi bez
+    zakazky"), ne chybejici udaj - viz alembic/versions/0003_add_order_
+    assignments.py.
+
+    Zapis je zamerne oddeleny od transakce read_new_cycles() (obdoba
+    write_heartbeat() z tiketu 1.8): vlastni komprehenzivni try/except a
+    vlastni commit/rollback, aby chyba tady nikdy nezablokovala/nezpozdila
+    samotny insert cyklu.
+    """
+    cached = _last_written_order_ref["value"]
+
+    if cached is _UNOBSERVED:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT order_ref FROM order_assignments "
+                    "WHERE machine_code=%s AND valid_to IS NULL "
+                    "ORDER BY valid_from DESC LIMIT 1",
+                    (MACHINE_CODE,),
+                )
+                row = cur.fetchone()
+            cached = row[0] if row else _UNOBSERVED
+        except Exception:
+            log.exception(
+                "Kontrola existujiciho otevreneho intervalu order_assignments "
+                "pro %s selhala, pokracuji bez ni.", MACHINE_CODE,
+            )
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            cached = _UNOBSERVED
+
+    if cached is not _UNOBSERVED and cached == observed_order_ref:
+        _last_written_order_ref["value"] = observed_order_ref
+        return
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE order_assignments SET valid_to=%s "
+                "WHERE machine_code=%s AND valid_to IS NULL",
+                (observed_at, MACHINE_CODE),
+            )
+            cur.execute(
+                "INSERT INTO order_assignments (machine_code, order_ref, valid_from) "
+                "VALUES (%s, %s, %s)",
+                (MACHINE_CODE, observed_order_ref, observed_at),
+            )
+        conn.commit()
+    except Exception:
+        log.exception(
+            "Zapis zmeny aktivni zakazky do order_assignments pro %s selhal.",
+            MACHINE_CODE,
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return
+
+    _last_written_order_ref["value"] = observed_order_ref
+    log.info(
+        "Zmena aktivni zakazky pro %s -> %r (platne od %s).",
+        MACHINE_CODE, observed_order_ref, observed_at,
+    )
+
+
+def _load_order_assignment_intervals(conn, min_ts, max_ts):
+    """Nacte vsechny order_assignments intervaly pro MACHINE_CODE, ktere se
+    prekryvaji s [min_ts, max_ts] - jednou za cely poll, ne per-radek (tiket
+    1.7). order_assignments se meni jen nekolikrat za smenu/den, zatimco
+    jedna davka muze mit desitky az stovky radku (napr. po catch-up po
+    vypadku) - naivni "jeden SELECT na radek" by tu byl zbytecny N+1 dotaz.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT order_ref, valid_from, valid_to FROM order_assignments "
+            "WHERE machine_code=%s AND valid_from <= %s "
+            "AND (valid_to IS NULL OR valid_to > %s) "
+            "ORDER BY valid_from",
+            (MACHINE_CODE, max_ts, min_ts),
+        )
+        return cur.fetchall()
+
+
+def _resolve_order_ref(occurred_at, intervals):
+    """Vrati order_ref intervalu [valid_from, valid_to), ktery pokryva
+    occurred_at, nebo None, pokud zadny takovy interval neexistuje (napr.
+    cykly zaznamenane pred zavedenim tohoto sledovani, nebo skutecna mezera
+    v pozorovanich) - to je poctive "nevime", ne chyba.
+    """
+    for order_ref, valid_from, valid_to in intervals:
+        if valid_from <= occurred_at and (valid_to is None or valid_to > occurred_at):
+            return order_ref
+    return None
 
 
 def is_data_line(line):
@@ -352,7 +490,16 @@ def read_new_cycles(conn):
         return 0
 
     new_lines = data_lines[last_count:]
-    order_ref = get_active_order()
+
+    # Tiket 1.7: tenhle poll je prilezitost znovu zjistit aktualni zakazku z
+    # Cyclades (throttlovano/cachovano uvnitr get_active_order) a pripadne
+    # zaznamenat pozorovanou zmenu do order_assignments (viz
+    # _sync_order_assignment). Navratova hodnota uz NENI pouzita ke stampovani
+    # cele davky najednou - misto toho se kazdy radek nize dohledava
+    # individualne podle sveho vlastniho occurred_at proti order_assignments
+    # (viz MES_TARGET_ARCHITECTURE.md §5.2 - duvod, proc puvodni "cela davka
+    # dostane jednu aktualni zakazku" bylo nutne opustit).
+    get_active_order(conn)
 
     # Cas precteni cele davky - zachycen jednou za poll, ne per-radek (viz
     # MES_IMPLEMENTATION_BACKLOG.md tiket 1.1). Pouziva se jak jako
@@ -408,6 +555,24 @@ def read_new_cycles(conn):
 
     occurred = reconstruct_occurred_at(parsed_rows, received_at)
 
+    # Tiket 1.7: predem nactenych intervalu order_assignments prekryvajicich
+    # rozsah [min, max] occurred_at teto davky - jeden dotaz za cely poll
+    # misto jednoho SELECTu na kazdy radek (viz _load_order_assignment_
+    # intervals docstring). Fallback na received_at, kdyby occurred_at bylo
+    # nejak None (defenzivne - po tiketech 1.1/1.2 by se to stat nemelo,
+    # reconstruct_occurred_at() vzdy vraci konkretni cas).
+    effective_timestamps = [
+        (occurred_at if occurred_at is not None else received_at)
+        for occurred_at, _source in occurred
+    ]
+    order_assignment_intervals = (
+        _load_order_assignment_intervals(
+            conn, min(effective_timestamps), max(effective_timestamps),
+        )
+        if effective_timestamps
+        else []
+    )
+
     inserted = 0
     with conn.cursor() as cur:
         # cycle_identity je zdroj pravdy pro "uz jsme tento cyklus
@@ -426,8 +591,18 @@ def read_new_cycles(conn):
         )
         (last_seen_cycle_count,) = cur.fetchone()
 
-        for parsed, (occurred_at, occurred_at_source) in zip(parsed_rows, occurred):
+        for parsed, (occurred_at, occurred_at_source), effective_ts in zip(
+            parsed_rows, occurred, effective_timestamps
+        ):
             cycle_count = parsed["cycle_count"]
+
+            # Tiket 1.7: kazdy radek dostava SVUJ VLASTNI order_ref podle
+            # toho, ktera zakazka byla aktivni v okamziku effective_ts (=
+            # occurred_at, s fallbackem na received_at) - ne jednu hodnotu
+            # sdilenou celou davkou. Kdyz zadny interval effective_ts
+            # nepokryva, order_ref je NULL (poctive "nevime", viz
+            # _resolve_order_ref docstring), ne chyba.
+            order_ref = _resolve_order_ref(effective_ts, order_assignment_intervals)
 
             # Znama mezera (viz 18_add_cycle_identity.sql a
             # MES_TARGET_ARCHITECTURE.md §5.3 "reset pocitadla cyklu"):
