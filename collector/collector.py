@@ -552,6 +552,44 @@ def maybe_rotate(conn):
     log.info("Rotace hotova, stara data v %s, REPORTS.JOB znovu spusten.", backup)
 
 
+def write_heartbeat(conn):
+    """Zapise collector_state.last_heartbeat_at=now() - VOLA SE JEDNOU ZA
+    KAZDOU ITERACI hlavni smycky v main(), bez ohledu na to, jestli
+    read_new_cycles() nasla nova data, skoncila nekterym ze svych tri
+    early-returnu (chybejici/prazdny REPORTS.DAT, zadna nova data - viz
+    komentar v postgres/init/20_add_collector_heartbeat.sql), nebo dokonce
+    vyhodila osetrenou vyjimku (viz main() - vola se v obou vetvich
+    except).
+
+    MES_IMPLEMENTATION_BACKLOG.md tiket 1.8: collector_state.last_poll_at
+    (aktualizovane uvnitr read_new_cycles()) NENI skutecny heartbeat, protoze
+    ho ty tri early-returny nikdy nezasahnou - efektivne znamena "cas
+    posledniho NOVE VLOZENEHO cyklu", ne "cas, kdy collector naposledy
+    uspesne dobehl svou pollovaci smycku". Tahle funkce je zamerne
+    samostatna a oddelena od read_new_cycles() (ktera resi jen ingest
+    cyklu, ne diagnostiku zivosti procesu), s vlastni malou transakci a
+    vlastnim try/except - pripadny vypadek DB pri zapisu heartbeatu nesmi
+    nikdy shodit samotny sber dat v hlavni smycce main().
+
+    lag_seconds se tu nepocita ani neuklada - viz api/main.py
+    GET /api/collectors/health, kde se pocita az pri cteni z now() -
+    last_heartbeat_at (aby nezastaravel, viz 20_add_collector_heartbeat.sql).
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE collector_state SET last_heartbeat_at=now() WHERE machine_code=%s",
+                (MACHINE_CODE,),
+            )
+        conn.commit()
+    except Exception:
+        log.exception("Zapis heartbeatu selhal, pokracuji ve sberu dat.")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+
 def main():
     log.info(
         "Start collectoru pro %s, sleduji %s (interval %.1fs, rotace nad %.0f MB).",
@@ -573,6 +611,10 @@ def main():
                 pass
             time.sleep(POLL_INTERVAL_SEC)
             conn = get_conn()
+            # Heartbeat i po obnove spojeni - viz write_heartbeat()
+            # docstring, ma se volat kazdou iteraci vcetne osetrenych
+            # vyjimek, ne jen "stastnou cestu".
+            write_heartbeat(conn)
             continue
         except Exception:
             log.exception("Neocekavana chyba v hlavni smycce.")
@@ -580,6 +622,8 @@ def main():
                 conn.rollback()
             except Exception:
                 pass
+
+        write_heartbeat(conn)
         time.sleep(POLL_INTERVAL_SEC)
 
 

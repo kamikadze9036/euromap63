@@ -53,6 +53,18 @@ CYCLADES_DB_PASSWORD = os.environ.get("CYCLADES_DB_PASSWORD", "")
 STATUS_CACHE_TTL_SEC = 5
 CYCLE_POLL_INTERVAL_SEC = 1.5
 
+# MES_IMPLEMENTATION_BACKLOG.md tiket 1.8 - prah "stale" pro
+# GET /api/collectors/health. Collector.py pollu REPORTS.DAT kazdych
+# POLL_INTERVAL_SEC (default 3s, viz collector/collector.py) a po kazde
+# iteraci zapise last_heartbeat_at bez ohledu na to, jestli nasel nova
+# data - takze zdravy collector by mel mit seconds_since_heartbeat radove
+# jednotky sekund. 30s je desetinasobek vychoziho POLL_INTERVAL_SEC:
+# dost velka rezerva na obcasny pomalejsi poll/DB blip, aby nehazela
+# false-positive "stale" za normalniho provozu, ale porad dost mala na
+# to, aby skutecne mrtvy/zaseknuty collector byl odhalen v radu desitek
+# sekund, ne az po minutach.
+HEARTBEAT_STALE_THRESHOLD_SEC = 30
+
 app = FastAPI(title="Euromap63 API")
 app.add_middleware(
     CORSMiddleware,
@@ -936,6 +948,84 @@ def machines_status():
             **labels,
             "latest_cycle": latest,
             "worst_cavity_scrap": worst_cavity,
+        })
+    return result
+
+
+@app.get("/api/collectors/health")
+def collectors_health():
+    """Diagnostika zivosti collectoru (MES_IMPLEMENTATION_BACKLOG.md tiket
+    1.8, viz postgres/init/20_add_collector_heartbeat.sql).
+
+    Vraci dva ZAMERNE ODLISENE signaly za kazdy aktivni stroj:
+      - seconds_since_heartbeat: jak dlouho od chvile, kdy collector.py
+        naposledy dobehl iteraci sve hlavni smycky (main()::write_heartbeat,
+        vola se KAZDOU iteraci bez ohledu na to, jestli nasla nova data) -
+        "bezi collector proces vubec?".
+      - seconds_since_last_cycle: jak dlouho od (occurred_at, s fallbackem
+        na received_at a pak na time - starsi cykly pred tiketem 1.1 nemaji
+        occurred_at/received_at) posledniho zaznamenaneho cyklu - "produkuje
+        stroj skutecne data / stiha ingest?".
+
+    Zamerne NEukladame lag_seconds jako sloupec (zastaralo by okamzite po
+    zapisu) - oba pocitame tady, az pri cteni, jako now() - <timestamp>.
+
+    Jeden dotaz s LATERAL JOIN pro "posledni cyklus na stroj" - zadny N+1
+    (na rozdil od znameho, tady VEDOME NEreseneho N+1 v /api/machines/status,
+    viz MES_IMPLEMENTATION_BACKLOG.md tiket 2.4).
+    """
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                m.machine_code,
+                cs.last_heartbeat_at,
+                cs.reports_lines_read,
+                lc.occurred_at   AS cycle_occurred_at,
+                lc.received_at   AS cycle_received_at,
+                lc.time          AS cycle_time
+            FROM machines m
+            LEFT JOIN collector_state cs ON cs.machine_code = m.machine_code
+            LEFT JOIN LATERAL (
+                SELECT c.occurred_at, c.received_at, c.time
+                FROM cycles c
+                WHERE c.machine_code = m.machine_code
+                ORDER BY c.cycle_count DESC
+                LIMIT 1
+            ) lc ON true
+            WHERE m.active
+            ORDER BY m.machine_code
+            """
+        )
+        rows = cur.fetchall()
+
+    now = datetime.now(timezone.utc)
+    result = []
+    for r in rows:
+        last_heartbeat_at = r["last_heartbeat_at"]
+        seconds_since_heartbeat = (
+            (now - last_heartbeat_at).total_seconds() if last_heartbeat_at is not None else None
+        )
+        last_cycle_at = r["cycle_occurred_at"] or r["cycle_received_at"] or r["cycle_time"]
+        seconds_since_last_cycle = (
+            (now - last_cycle_at).total_seconds() if last_cycle_at is not None else None
+        )
+
+        if last_heartbeat_at is None:
+            status = "unknown"
+        elif seconds_since_heartbeat <= HEARTBEAT_STALE_THRESHOLD_SEC:
+            status = "ok"
+        else:
+            status = "stale"
+
+        result.append({
+            "machine_code": r["machine_code"],
+            "last_heartbeat_at": last_heartbeat_at,
+            "seconds_since_heartbeat": seconds_since_heartbeat,
+            "last_cycle_at": last_cycle_at,
+            "seconds_since_last_cycle": seconds_since_last_cycle,
+            "reports_lines_read": r["reports_lines_read"],
+            "status": status,
         })
     return result
 
