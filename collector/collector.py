@@ -31,6 +31,7 @@ Promenne prostredi (viz docker-compose.yml):
                         cyklu. Prazdne/chybejici = order_ref se neplni.
 """
 import glob
+import hashlib
 import json
 import logging
 import os
@@ -287,10 +288,30 @@ def read_new_cycles(conn):
 
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT reports_lines_read FROM collector_state WHERE machine_code=%s",
+            "SELECT reports_lines_read, last_line_hash, "
+            "reports_dat_size_at_checkpoint FROM collector_state "
+            "WHERE machine_code=%s",
             (MACHINE_CODE,),
         )
-        (last_count,) = cur.fetchone()
+        (last_count, last_line_hash, reports_dat_size_at_checkpoint) = cur.fetchone()
+
+    # Integritni kontrola checkpointu (MES_TARGET_ARCHITECTURE.md §5.3,
+    # MES_IMPLEMENTATION_BACKLOG.md tiket 1.4, viz
+    # postgres/init/19_add_checkpoint_integrity.sql). maybe_rotate() svou
+    # VLASTNI, zamernou rotaci uz resi spravne (explicitni reset na 0) -
+    # tohle chyta jen NEOCEKAVANE zmenseni/nahrazeni souboru mimo tuto
+    # cestu (rucni zasah, kvirk stroje, obnova ze zalohy...), kdy by
+    # "len(data_lines) <= last_count" nize jinak tise a navzdy zastavilo
+    # zpracovani.
+    current_size = os.path.getsize(REPORTS_DAT)
+    if reports_dat_size_at_checkpoint is not None and current_size < reports_dat_size_at_checkpoint:
+        log.warning(
+            "REPORTS.DAT je mensi nez posledni checkpoint (%d -> %d bajtu) "
+            "mimo rizenou rotaci - soubor byl zrejme zkracen/nahrazen. "
+            "Ignoruji stary checkpoint a ctu od zacatku souboru.",
+            reports_dat_size_at_checkpoint, current_size,
+        )
+        last_count = 0
 
     with open(REPORTS_DAT, "r", encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
@@ -314,6 +335,19 @@ def read_new_cycles(conn):
         header_line_count += 1
     header = split_csv_line("".join(header_parts))
     data_lines = lines[header_line_count:]
+
+    if last_count > 0 and last_line_hash and last_count <= len(data_lines):
+        actual_hash = hashlib.sha256(data_lines[last_count - 1].encode("utf-8")).hexdigest()
+        if actual_hash != last_line_hash:
+            log.warning(
+                "Obsah REPORTS.DAT na pozici posledniho checkpointu (radek "
+                "%d) neodpovida ocekavanemu hashi - soubor byl zrejme "
+                "prepsan jinym obsahem mimo rizenou rotaci. Ignoruji stary "
+                "checkpoint a ctu od zacatku souboru.",
+                last_count,
+            )
+            last_count = 0
+
     if len(data_lines) <= last_count:
         return 0
 
@@ -326,10 +360,34 @@ def read_new_cycles(conn):
     received_at = datetime.now(timezone.utc)
 
     parsed_rows = []
-    for line in new_lines:
+    last_new_line_index = len(new_lines) - 1
+    holdback_last_line = False
+    for idx, line in enumerate(new_lines):
         values = split_csv_line(line)
         if len(values) != len(header):
-            log.warning("Preskakuji poskozeny radek REPORTS.DAT: %r", line)
+            if idx == last_new_line_index:
+                # Tenhle radek je AKTUALNE posledni v celem souboru - misto
+                # rovnou "warn + preskocit + pocitat do checkpointu" (jako
+                # nize u radku, ktere nejsou posledni) pridrzime checkpoint
+                # jeden radek pred nim. Duvod (tiket 1.4, viz
+                # MES_TARGET_ARCHITECTURE.md §5.3 "nedokonceny posledni
+                # radek souboru"): stroj muze byt prave v procesu dopisovani
+                # tohoto radku (POLL_INTERVAL_SEC je typicky jen 3s), takze
+                # nesedici pocet sloupcu tu muze byt jen docasny stav, ne
+                # trvale poskozena data. Pri pristim pollu bude tenhle radek
+                # bud uz kompletni (a zpracuje se normalne), nebo uz nebude
+                # poslednim radkem souboru (pribyl novejsi radek za nim) - v
+                # tom pripade uz normalni "preskocit + pocitat do
+                # checkpointu" vetev nize spravne plati, protoze skutecne
+                # jde o trvale poskozena data.
+                log.warning(
+                    "Posledni radek REPORTS.DAT vypada nekompletni/poskozeny "
+                    "(mozny soubezny zapis strojem) - pridrzuji checkpoint, "
+                    "zkusim znovu pri pristim pollu: %r", line,
+                )
+                holdback_last_line = True
+            else:
+                log.warning("Preskakuji poskozeny radek REPORTS.DAT: %r", line)
             continue
         row = dict(zip(header, values))
         try:
@@ -434,10 +492,19 @@ def read_new_cycles(conn):
             )
             inserted += 1
 
+        # Normalne pokryvame cely soubor (len(data_lines)); pri holdbacku
+        # posledniho (nekompletniho) radku ale checkpoint zamerne pridrzime
+        # o jeden radek zpet, viz komentar u holdback_last_line vyse.
+        lines_read = len(data_lines) - 1 if holdback_last_line else len(data_lines)
+        new_last_line_hash = (
+            hashlib.sha256(data_lines[lines_read - 1].encode("utf-8")).hexdigest()
+            if lines_read > 0 else None
+        )
         cur.execute(
-            "UPDATE collector_state SET reports_lines_read=%s, last_poll_at=now() "
+            "UPDATE collector_state SET reports_lines_read=%s, last_poll_at=now(), "
+            "last_line_hash=%s, reports_dat_size_at_checkpoint=%s "
             "WHERE machine_code=%s",
-            (len(data_lines), MACHINE_CODE),
+            (lines_read, new_last_line_hash, current_size, MACHINE_CODE),
         )
     conn.commit()
 
@@ -468,8 +535,15 @@ def maybe_rotate(conn):
         os.remove(REPORTS_LOG)
 
     with conn.cursor() as cur:
+        # last_line_hash/reports_dat_size_at_checkpoint se tykaji obsahu
+        # PRED touto (zamernou) rotaci - musi jit na NULL spolu s
+        # reports_lines_read, jinak by prvni read_new_cycles() na novem
+        # (prazdnem) REPORTS.DAT porovnaval jeho velikost/hash proti
+        # hodnotam ze stareho, uz prejmenovaneho souboru (viz tiket 1.4,
+        # postgres/init/19_add_checkpoint_integrity.sql).
         cur.execute(
-            "UPDATE collector_state SET reports_lines_read=0 WHERE machine_code=%s",
+            "UPDATE collector_state SET reports_lines_read=0, last_line_hash=NULL, "
+            "reports_dat_size_at_checkpoint=NULL WHERE machine_code=%s",
             (MACHINE_CODE,),
         )
     conn.commit()
