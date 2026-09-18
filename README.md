@@ -13,6 +13,8 @@ aktuálních hodnot a trendů.
   `REPORTS.DAT`, zapisuje do DB, obsluhuje JOB/REQ soubory pro stroj.
 - **Databáze** — TimescaleDB (Postgres 16), hypertable `cycles`
   (`cycle_count`/`cycle_time_s` typované, ostatní parametry v `JSONB`).
+  Schéma: `postgres/init/*.sql` pro čerstvou DB, Alembic pro migrace
+  existující DB od teď — viz "Databázové migrace (Alembic)" níže.
 - **FTP** — `pure-ftpd` (`network_mode: host` kvůli PASV), nativní UNIX-style
   listing.
 - **Frontend** — čistý vanilla JS/HTML/CSS (žádný framework, žádné CDN
@@ -94,6 +96,41 @@ jiném síťovém segmentu/VLAN než VM (typické u OT/IT segregace v továrníc
 sítích), je potřeba u správce sítě/firewallu povolit průchod těchto portů
 mezi segmenty — jinak `LIST`/`RETR`/`DELE` z pohledu stroje nikdy neprojdou,
 i když je celý stack správně nasazený.
+
+## Databázové migrace (Alembic)
+
+Od tiketu 1.9 existují **dva** mechanismy pro schéma databáze, které se
+záměrně nevylučují:
+
+- `postgres/init/NN_*.sql` (mountnuto jako `/docker-entrypoint-initdb.d`)
+  dál inicializuje **nový, prázdný** Postgres data volume — Postgres tyto
+  skripty spustí jen jednou, při prvním startu nad prázdným `pgdata`
+  volume. Pro čerstvou dev/lokální DB se nic nemění. Tyto soubory se dál
+  nemažou ani neupravují.
+- **Alembic** (`alembic.ini` + `alembic/` v kořeni repa) je od teď způsob,
+  jak dělat a sledovat změny schématu na DB, která **už existuje**
+  (staging/produkce na `spc-vm`, nebo dev DB po prvním initu). Jediná
+  baseline revize (`alembic/versions/0001_baseline_squash_postgres_init.py`)
+  přehrává přesně `postgres/init/01_schema.sql` až
+  `20_add_collector_heartbeat.sql`, takže `alembic upgrade head` nad
+  prázdnou DB dá stejné schéma jako dnešní `docker-entrypoint-initdb.d`.
+
+**Nová změna schématu od teď = nová Alembic revize
+(`alembic/versions/NN_*.py`), ne další `postgres/init/NN_*.sql`.**
+
+**Kriticky důležité pro `spc-vm`:** produkční DB má schéma už aplikované
+ručně (`docker exec ... psql -f postgres/init/NN_*.sql`), ne přes Alembic.
+Při prvním zavedení Alembicu tam se musí spustit `alembic stamp head`
+(označí DB jako již na baseline revizi, bez spuštění SQL) — **nikdy**
+`alembic upgrade head` (zkusilo by znovu spustit baseline SQL nad DB, která
+ho už má). Přesný postup, přesné příkazy a proč na tom záleží: viz
+[`docs/alembic_adoption.md`](docs/alembic_adoption.md) — přečíst před
+jakýmkoli zásahem do `spc-vm`.
+
+Tato baseline revize nebyla ověřena proti reálné Postgres/TimescaleDB
+instanci (sandbox, ve kterém vznikla, neměl Docker/funkční psycopg2) — jen
+syntakticky. Před důvěrou v ni (a před `alembic stamp head` na `spc-vm`) je
+potřeba ji ověřit na zahazovací DB — postup je v `docs/alembic_adoption.md`.
 
 ## Rozšíření na další stroj
 

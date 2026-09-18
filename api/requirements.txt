@@ -2,3 +2,11 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 psycopg2-binary==2.9.9
 pymssql==2.3.2
+
+# Schema migrations (ticket 1.9 - MES_IMPLEMENTATION_BACKLOG.md). Lives here
+# rather than in collector/requirements.txt because api/ already owns the
+# DATABASE_URL / Postgres connection and application-level schema concerns;
+# collector/ is purely EUROMAP63 ingestion and has no reason to depend on
+# Alembic. See alembic/env.py and docs/alembic_adoption.md.
+alembic==1.13.3
+SQLAlchemy==2.0.36
