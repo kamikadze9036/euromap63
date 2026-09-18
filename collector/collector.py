@@ -352,11 +352,67 @@ def read_new_cycles(conn):
 
     inserted = 0
     with conn.cursor() as cur:
+        # cycle_identity je zdroj pravdy pro "uz jsme tento cyklus
+        # zaznamenali" (viz postgres/init/18_add_cycle_identity.sql a
+        # MES_TARGET_ARCHITECTURE.md §5.3). reports_lines_read
+        # (aktualizovano nize) zustava, ale uz jen jako rychla optimalizace
+        # pozice cteni souboru - usetri opetovne cteni/parsovani celeho
+        # REPORTS.DAT pri kazdem pollu. Neni to vic zdroj pravdy pro dedup:
+        # replay archivu, restart collectoru mezi zapisem a checkpointem
+        # apod. muze last_count/reports_lines_read obejit, ale
+        # cycle_identity ne, protoze insert do ni je ve stejne transakci
+        # jako insert do cycles.
+        cur.execute(
+            "SELECT MAX(cycle_count) FROM cycle_identity WHERE machine_code=%s",
+            (MACHINE_CODE,),
+        )
+        (last_seen_cycle_count,) = cur.fetchone()
+
         for parsed, (occurred_at, occurred_at_source) in zip(parsed_rows, occurred):
-            # Zadny ON CONFLICT - tabulka cycles nema unique constraint na
-            # (machine_code, cycle_count), protoze TimescaleDB vyzaduje, aby
-            # unique/PK vzdy obsahoval partitioning sloupec "time". Dedup
-            # reseni je atomicka transakce + reports_lines_read nize.
+            cycle_count = parsed["cycle_count"]
+
+            # Znama mezera (viz 18_add_cycle_identity.sql a
+            # MES_TARGET_ARCHITECTURE.md §5.3 "reset pocitadla cyklu"):
+            # ActCntCyc je normalne monotonne rostouci celozivotni citac
+            # stroje. Pokud klesne, muze jit o reset citace na strani stroje
+            # (servis/firmware) - cycle_identity.PRIMARY KEY (machine_code,
+            # cycle_count) by pak novy cyklus se stejnou hodnotou jako pred
+            # resetem chybne oznacil za duplicitu a tise ho zahodil. Tady jen
+            # logujeme varovani jako casny signal; skutecne reseni (napr.
+            # "epoch" sloupec) je mimo rozsah tohoto tiketu.
+            if last_seen_cycle_count is not None and cycle_count < last_seen_cycle_count:
+                log.warning(
+                    "cycle_count pro %s klesl (%s -> %s) - mozny reset "
+                    "pocitadla cyklu na stroji, viz MES_TARGET_ARCHITECTURE.md "
+                    "§5.3.",
+                    MACHINE_CODE, last_seen_cycle_count, cycle_count,
+                )
+            if last_seen_cycle_count is None or cycle_count > last_seen_cycle_count:
+                last_seen_cycle_count = cycle_count
+
+            # Gatekeeper: vloz identitu cyklu (machine_code, cycle_count) a
+            # pokracuj s INSERTem do cycles jen kdyz tahle dvojice jeste
+            # nebyla zaznamenana. ON CONFLICT DO NOTHING + RETURNING 1 vrati
+            # radek jen pri skutecnem insertu, takze fetchone() je None
+            # prave a jen pri konfliktu (duplicite). Ve stejne transakci
+            # jako insert do cycles nize.
+            cur.execute(
+                """
+                INSERT INTO cycle_identity (machine_code, cycle_count)
+                VALUES (%s, %s)
+                ON CONFLICT DO NOTHING
+                RETURNING 1
+                """,
+                (MACHINE_CODE, cycle_count),
+            )
+            if cur.fetchone() is None:
+                log.info(
+                    "Preskakuji jiz zaznamenany cyklus (duplicitni doruceni): "
+                    "machine_code=%s cycle_count=%s",
+                    MACHINE_CODE, cycle_count,
+                )
+                continue
+
             cur.execute(
                 """
                 INSERT INTO cycles (
@@ -367,7 +423,7 @@ def read_new_cycles(conn):
                 """,
                 (
                     MACHINE_CODE,
-                    parsed["cycle_count"],
+                    cycle_count,
                     parsed["cycle_time_s"],
                     order_ref,
                     json.dumps(parsed["params"]),
