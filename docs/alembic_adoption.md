@@ -27,7 +27,7 @@ letting `docker-entrypoint-initdb.d` run today.
 
 | Database | Current state | What it needs |
 |---|---|---|
-| Fresh dev/local (new `pgdata` volume) | Nothing yet | Either let `docker-entrypoint-initdb.d` run as today, **or** start empty and run `alembic upgrade head` — both should converge on the same schema (see "Verification" below — this has *not* been proven against a real DB yet) |
+| Fresh dev/local (new `pgdata` volume) | Nothing yet | Either let `docker-entrypoint-initdb.d` run as today, **or** start empty and run `alembic upgrade head` — both converge on the same schema (verified against a real DB, see "Verification status" below) |
 | An existing dev/local DB that already ran `postgres/init/*.sql` via `docker-entrypoint-initdb.d` | Has the full schema, not tracked by Alembic | `alembic stamp head` (never `upgrade`) |
 | **`spc-vm` production** | Has the full schema through migration 21 (`reports_dat_archive`, ticket 1.5 — already folded into this baseline), applied by hand via `docker exec ... psql -f postgres/init/NN_*.sql`. **Not** tracked by Alembic. | `alembic stamp head` (never `upgrade`) |
 
@@ -147,35 +147,31 @@ concurrent starts racing on the same migration, a bad migration silently
 blocking every future container start, etc.) and shouldn't be decided
 unilaterally inside this ticket.
 
-## Verification status (read this before trusting any of the above)
+## Verification status
 
-This baseline migration's equivalence to running `postgres/init/01_schema.sql`
-through `21_add_reports_dat_archive.sql` in order has **not** been verified
-against a real Postgres/TimescaleDB instance — the sandbox this was written
-in has no Docker and no working `psycopg2`/`alembic`/`SQLAlchemy` install
-(confirmed: `import sqlalchemy` fails; `import alembic` silently resolves to
-this project's own `alembic/` directory as a namespace package, not the
-real library — there is no real Alembic in this sandbox to run anything
-against). What *was* checked here:
+**Verified 2026-09-18** against two throwaway TimescaleDB (pg16) containers
+on spc-vm (plain `docker run`, fully separate from the production stack —
+never touched): one bootstrapped the old way
+(`docker-entrypoint-initdb.d` running `postgres/init/01..21` in order), one
+started empty and brought up via `alembic upgrade head`. `pg_dump
+--schema-only` diffs identical except for Alembic's own `alembic_version`
+bookkeeping table and the intentional `COMMENT ON` statements added by
+revision `0002` (expected — the init-scripts DB has no equivalent of
+`0002`). Seed data row counts matched exactly: 20 `machines`, 249
+`machine_parameters`, 48 with `param_category` set.
 
-- `alembic/env.py` and every file under `alembic/versions/` parse as valid
-  Python (`ast.parse`).
-- `alembic.ini` parses as valid, well-formed `ConfigParser` syntax, and its
-  `%%`-escaped `file_template` resolves to the expected literal `%(rev)s_%(slug)s`.
-- Every `postgres/init/*.sql` file was read in full and its statements were
-  transcribed into `0001_baseline_squash_postgres_init.py` verbatim (via
-  `r"""..."""` raw strings, executed with `connection.exec_driver_sql()` —
-  chosen specifically because it sends SQL straight to the DBAPI with no
-  bind-parameter parsing, so this project's parameter names containing
-  literal backslashes and unit strings containing literal `%` can't be
-  misinterpreted).
+This verification pass caught and fixed a real bug in `0001`'s `upgrade()`:
+`connection.exec_driver_sql(sql_block)` still routes through SQLAlchemy's
+engine, which calls the DBAPI's `cursor.execute(statement, parameters)`
+with an empty `immutabledict` as `parameters` — psycopg2 then attempts
+`%`-style placeholder substitution (triggered by a parameters argument
+being passed at all, even empty) and fails with `"immutabledict is not a
+sequence"` the moment the SQL contains a literal `%` — which this
+baseline's seed data genuinely does (e.g. `param_unit = '%'` in the
+dosing-percent blocks). Fixed by dropping to the raw psycopg2 cursor
+(`connection.connection.cursor()`) and calling `.execute(sql_block)` with
+no second argument — this is what actually matches `psql -f`'s behavior;
+`exec_driver_sql()` alone did not, despite the original intent.
 
-What this means in practice: **before running `alembic stamp head` against
-spc-vm, or trusting this baseline for any real use**, spin up a throwaway
-TimescaleDB container, run `alembic upgrade head` against it, and diff
-`pg_dump --schema-only` (plus `machine_parameters`/`machines` row counts)
-against a second throwaway database bootstrapped the old way
-(`docker-entrypoint-initdb.d` running `postgres/init/*.sql` in order). This
-is exactly the kind of real-DB verification already done elsewhere in this
-project's history for tickets 1.1–1.4 and 1.8 — this baseline still needs
-the same treatment before it's trusted.
+`alembic stamp head` against `spc-vm` is now safe to run per the procedure
+above.

@@ -45,18 +45,27 @@ highest-risk part of ticket 1.9 - read that file before touching spc-vm.
 ============================================================================
  VERIFICATION STATUS
 ============================================================================
-This migration's equivalence to running postgres/init/01..21 in order on a
-fresh database has NOT been verified against a real Postgres/TimescaleDB
-instance in the sandbox this revision was written in (no Docker / working
-psycopg2 available there). It has only been checked for Python/SQL syntax
-validity. Before this is trusted for real use (including before running
-`alembic stamp head` against spc-vm), spin up a throwaway TimescaleDB
-container, run `alembic upgrade head` against it, and diff
-`pg_dump --schema-only` (and machine_parameters/machines row counts) against
-a second throwaway database bootstrapped the old way (docker-entrypoint-
-initdb.d running postgres/init/*.sql). Tickets 1.1-1.4 and 1.8 already had
-this kind of real-DB verification done for them elsewhere in this project's
-history - this baseline still needs the same treatment.
+Verified 2026-09-18 against two throwaway TimescaleDB (pg16) containers on
+spc-vm: one bootstrapped the old way (docker-entrypoint-initdb.d running
+postgres/init/01..21), one empty + `alembic upgrade head`. `pg_dump
+--schema-only` diffs identical except for alembic's own `alembic_version`
+bookkeeping table and the intentional `COMMENT ON` statements added by
+revision 0002 (expected - the init-scripts DB has no equivalent of 0002).
+Seed data row counts matched exactly (20 machines, 249 machine_parameters,
+48 with param_category set).
+
+This verification pass caught and fixed a real bug: `connection.
+exec_driver_sql(sql_block)` still routes through SQLAlchemy's engine,
+which calls the DBAPI's `cursor.execute(statement, parameters)` with an
+empty `immutabledict` as `parameters` - psycopg2 then attempts %-style
+placeholder substitution (triggered by a parameters argument being passed
+at all, even empty) and fails with "immutabledict is not a sequence" the
+moment the SQL contains a literal '%' - which this baseline's seed data
+genuinely does (e.g. param_unit = '%' in the dosing-percent blocks).
+Fixed in `upgrade()` by dropping to the raw psycopg2 cursor
+(`connection.connection.cursor()`) and calling `.execute(sql_block)` with
+no second argument, which matches `psql -f`'s behavior exactly and avoids
+psycopg2's placeholder parsing entirely.
 """
 
 from typing import Sequence, Union
@@ -735,16 +744,27 @@ _ALL_BLOCKS_IN_ORDER = (
 
 
 def upgrade() -> None:
+    # Verified against a real throwaway TimescaleDB instance (2026-09-18):
+    # connection.exec_driver_sql(sql_block) still goes through SQLAlchemy's
+    # engine, which calls the DBAPI's cursor.execute(statement, parameters)
+    # with an empty `immutabledict` as `parameters` - psycopg2 then tries to
+    # do %-style placeholder substitution (because a parameters argument was
+    # passed at all, even though it's empty) and chokes with
+    # "immutabledict is not a sequence" the moment the SQL contains a
+    # literal '%' - which this baseline's seed data genuinely does
+    # (param_unit values like '%' in the dosing-percent blocks). Dropping
+    # to the raw psycopg2 cursor and calling cursor.execute(sql_block) with
+    # NO second argument at all avoids psycopg2's placeholder parsing
+    # entirely - this is what actually achieves the "send the string
+    # straight through, exactly like `psql -f`" goal that exec_driver_sql
+    # alone did not. The raw cursor shares the same underlying DBAPI
+    # connection/transaction that Alembic's outer transaction (see
+    # "Will assume transactional DDL" in its log output) already manages,
+    # so no manual commit is needed or wanted here.
     connection = op.get_bind()
+    raw_cursor = connection.connection.cursor()
     for sql_block in _ALL_BLOCKS_IN_ORDER:
-        # exec_driver_sql (not op.execute/sa.text) - sends the string
-        # straight to the DBAPI with no bind-parameter parsing, so literal
-        # ':' or '%' characters anywhere in this SQL (there are none in
-        # practice here, but the point still stands) can't be misread as
-        # placeholders. psycopg2 supports multiple ';'-separated statements
-        # in a single exec_driver_sql call, so each block runs as one unit,
-        # same as `psql -f postgres/init/NN_*.sql` would.
-        connection.exec_driver_sql(sql_block)
+        raw_cursor.execute(sql_block)
 
 
 def downgrade() -> None:
