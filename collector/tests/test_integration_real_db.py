@@ -46,6 +46,10 @@ def _cleanup(conn, machine_code=MACHINE_CODE):
         cur.execute("DELETE FROM cycles WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM cycle_identity WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM reports_dat_archive WHERE machine_code=%s", (machine_code,))
+        # Ticket 1.7 (alembic/versions/0003_add_order_assignments.py) - must
+        # go before the "machines" delete below (order_assignments.machine_code
+        # is a FOREIGN KEY REFERENCES machines.machine_code).
+        cur.execute("DELETE FROM order_assignments WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM collector_state WHERE machine_code=%s", (machine_code,))
         cur.execute("DELETE FROM machines WHERE machine_code=%s", (machine_code,))
     conn.commit()
@@ -323,4 +327,114 @@ def test_maybe_rotate_records_archive_row_against_real_db(db_conn, machine, monk
     reports_lines_read, last_line_hash, size_at_checkpoint = _checkpoint(db_conn)
     assert reports_lines_read == 0
     assert last_line_hash is None
+    assert size_at_checkpoint is None
+
+
+def test_read_new_cycles_resolves_order_ref_per_row_against_real_db(db_conn, machine, monkeypatch):
+    """Ticket 1.7 end-to-end against real Postgres (alembic/versions/
+    0003_add_order_assignments.py): a batch whose reconstructed occurred_at
+    spans an order change must split order_ref per row accordingly -
+    NOT stamp the whole batch with whatever get_active_order() would return
+    right now (the bug MES_TARGET_ARCHITECTURE.md §5.2 describes)."""
+    import datetime as datetime_module
+
+    frozen_now = datetime_module.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime_module.timezone.utc)
+
+    class _FrozenDateTime(datetime_module.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now
+
+    monkeypatch.setattr(collector_module, "datetime", _FrozenDateTime)
+
+    tmp_path = machine
+    # 3 rows, 10s apart: cycle 12 (last) -> occurred_at 12:00:00, cycle 11
+    # -> 11:59:50, cycle 10 (first) -> 11:59:40 (see reconstruct_occurred_at).
+    _write_reports_dat(tmp_path, ["10,10.0", "11,10.0", "12,10.0"])
+
+    # Cutoff strictly between cycle 10's and cycle 11's occurred_at, so the
+    # batch genuinely splits across the two intervals.
+    cutoff = frozen_now - datetime_module.timedelta(seconds=15)
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO order_assignments (machine_code, order_ref, valid_from, valid_to) "
+            "VALUES (%s, %s, %s, %s)",
+            (MACHINE_CODE, "ORDER-BEFORE", frozen_now - datetime_module.timedelta(hours=1), cutoff),
+        )
+        cur.execute(
+            "INSERT INTO order_assignments (machine_code, order_ref, valid_from, valid_to) "
+            "VALUES (%s, %s, %s, %s)",
+            (MACHINE_CODE, "ORDER-AFTER", cutoff, None),
+        )
+    db_conn.commit()
+
+    inserted = collector_module.read_new_cycles(db_conn)
+    assert inserted == 3
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT cycle_count, order_ref FROM cycles WHERE machine_code=%s ORDER BY cycle_count",
+            (MACHINE_CODE,),
+        )
+        rows = dict(cur.fetchall())
+
+    assert rows == {10: "ORDER-BEFORE", 11: "ORDER-AFTER", 12: "ORDER-AFTER"}
+
+
+def test_get_active_order_writes_order_assignment_transition_against_real_db(db_conn, machine, monkeypatch):
+    """Ticket 1.7: get_active_order()/_sync_order_assignment() must persist
+    a real row in order_assignments exactly when the observed Cyclades
+    order changes, and must NOT write again while it hasn't (see
+    collector.py's _sync_order_assignment for why: comparing against the
+    last value THIS PROCESS wrote, not re-querying on every call)."""
+
+    class _FakeCycladesDriver:
+        """Stands in for the pymssql module - see collector/tests/
+        test_order_assignments.py's identical fake for the unit-test
+        version of this same scenario."""
+
+        def __init__(self, responses):
+            self.responses = list(responses)
+            self._calls = 0
+            self._current = None
+
+        def connect(self, **kwargs):
+            return self
+
+        def cursor(self):
+            return self
+
+        def execute(self, sql, params=()):
+            idx = min(self._calls, len(self.responses) - 1)
+            self._current = self.responses[idx]
+            self._calls += 1
+
+        def fetchone(self):
+            return (self._current,) if self._current is not None else None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(collector_module, "pymssql", _FakeCycladesDriver(["ORD-A", "ORD-A", "ORD-B"]))
+    monkeypatch.setattr(collector_module, "CYCLADES_DB_HOST", "cyclades-host")
+    monkeypatch.setattr(collector_module, "CYCLADES_MAC_REFMAC", "P-01")
+    monkeypatch.setattr(collector_module, "CYCLADES_CACHE_TTL_SEC", 0)
+    monkeypatch.setattr(collector_module, "_last_written_order_ref", {"value": collector_module._UNOBSERVED})
+    monkeypatch.setattr(collector_module, "_cyclades_cache", {"order_ref": None, "checked_at": 0.0})
+
+    assert collector_module.get_active_order(db_conn) == "ORD-A"
+    assert collector_module.get_active_order(db_conn) == "ORD-A"
+    assert collector_module.get_active_order(db_conn) == "ORD-B"
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT order_ref, valid_to FROM order_assignments "
+            "WHERE machine_code=%s ORDER BY valid_from",
+            (MACHINE_CODE,),
+        )
+        rows = cur.fetchall()
+
+    assert len(rows) == 2, "only the genuine ORD-A -> ORD-B transition should have written a new row"
+    assert rows[0][0] == "ORD-A" and rows[0][1] is not None  # closed
+    assert rows[1][0] == "ORD-B" and rows[1][1] is None      # still open
     assert size_at_checkpoint is None

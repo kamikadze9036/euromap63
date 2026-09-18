@@ -51,6 +51,15 @@ class FakeDB:
         self.collector_state = {}
         self.cycle_identity = set()  # {(machine_code, cycle_count)}
         self.cycles = []  # list of dict rows "inserted" into cycles
+        # Ticket 1.7: list of dicts {"machine_code", "order_ref",
+        # "valid_from", "valid_to"} - pre-populate in a test to simulate
+        # order_assignments intervals already recorded by earlier polls.
+        # These tests don't exercise get_active_order()/_sync_order_
+        # assignment() itself (CYCLADES_DB_HOST is empty in this test
+        # environment, so get_active_order() returns None without touching
+        # the DB at all - see test_order_assignments.py for that), only the
+        # read-side per-row lookup read_new_cycles() now always performs.
+        self.order_assignments = []
 
     def cursor(self):
         return FakeCursor(self)
@@ -60,6 +69,7 @@ class FakeCursor:
     def __init__(self, db):
         self.db = db
         self._result = None
+        self._rows = []
 
     def __enter__(self):
         return self
@@ -87,6 +97,19 @@ class FakeCursor:
             (machine_code,) = params
             counts = [c for (m, c) in self.db.cycle_identity if m == machine_code]
             self._result = (max(counts) if counts else None,)
+
+        elif sql_n.startswith("SELECT order_ref, valid_from, valid_to FROM order_assignments"):
+            # Ticket 1.7 per-poll interval fetch (see collector._load_order_
+            # assignment_intervals) - overlap of [valid_from, valid_to) with
+            # [min_ts, max_ts], mirroring the real SQL's WHERE clause.
+            machine_code, max_ts, min_ts = params
+            self._rows = [
+                (a["order_ref"], a["valid_from"], a["valid_to"])
+                for a in sorted(self.db.order_assignments, key=lambda a: a["valid_from"])
+                if a["machine_code"] == machine_code
+                and a["valid_from"] <= max_ts
+                and (a["valid_to"] is None or a["valid_to"] > min_ts)
+            ]
 
         elif sql_n.startswith("INSERT INTO cycle_identity"):
             machine_code, cycle_count = params
@@ -138,6 +161,9 @@ class FakeCursor:
 
     def fetchone(self):
         return self._result
+
+    def fetchall(self):
+        return self._rows
 
 
 class FakeConn:
