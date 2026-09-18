@@ -517,6 +517,51 @@ def read_new_cycles(conn):
     return inserted
 
 
+def _sha256_file(path, chunk_size=1024 * 1024):
+    """Streamovane (po 1 MB blocich) sha256 obsahu souboru - narozdil od
+    read_new_cycles(), ktere kvuli CSV parsovani cele REPORTS.DAT nacita do
+    pameti najednou (az ROTATE_SIZE_MB, defaultne 50 MB, jako text), tady na
+    to neni duvod: pocitani hashe potrebuje jen bajty po blocich, ne cely
+    obsah soucasne v pameti, takze streamovani je zadarmo a levnejsi na
+    spicku pameti behem rotace (kdy uz tak zaroven bezi zbytek collectoru).
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def record_archive(conn, archive_path, line_count):
+    """Zapise checksum + metadata archivovaneho REPORTS.DAT do
+    reports_dat_archive (MES_IMPLEMENTATION_BACKLOG.md tiket 1.5, viz
+    postgres/init/21_add_reports_dat_archive.sql pro plne zduvodneni volby
+    DB tabulky misto sidecar souboru a vyznamu jednotlivych sloupcu).
+
+    VOLA SE AZ PO TOM, co maybe_rotate() uz dokoncil samotnou (dulezitou,
+    dnes uz funkcni) rotaci - abort, prejmenovani souboru, reset
+    collector_state, opetovne vyzbrojeni REPORTS.JOB. Tato funkce je
+    zamerne oddelena a obalena vlastnim try/except v maybe_rotate(): selhani
+    tady (chyba DB, chyba cteni souboru pri hashovani) nesmi nikdy zpetne
+    zablokovat nebo zpozdit produkci dat strojem - jde jen o bookkeeping pro
+    budouci replay/reconciliation nastroj (tiket 1.6), ne o kriticka cestu.
+    """
+    checksum = _sha256_file(archive_path)
+    size_bytes = os.path.getsize(archive_path)
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO reports_dat_archive "
+            "(machine_code, archive_path, sha256, line_count, size_bytes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (MACHINE_CODE, archive_path, checksum, line_count, size_bytes),
+        )
+    conn.commit()
+    log.info(
+        "Archivni zaznam ulozen: %s (sha256=%s, radku=%d, %d bajtu).",
+        archive_path, checksum, line_count, size_bytes,
+    )
+
+
 def maybe_rotate(conn):
     if not os.path.exists(REPORTS_DAT):
         return
@@ -527,6 +572,18 @@ def maybe_rotate(conn):
     log.warning("REPORTS.DAT dosahl %.1f MB, provadim rotaci.", size_mb)
     write_request("ABORT.JOB")
     time.sleep(2)
+
+    # Posledni znamy pocet radku skutecne ingestovanych do "cycles" z
+    # tohoto souboru PRED rotaci - potrebne pro reports_dat_archive.line_count
+    # (viz postgres/init/21_add_reports_dat_archive.sql), musi se precist
+    # driv, nez ho UPDATE nize vynuluje.
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT reports_lines_read FROM collector_state WHERE machine_code=%s",
+            (MACHINE_CODE,),
+        )
+        row = cur.fetchone()
+    ingested_line_count = row[0] if row and row[0] is not None else 0
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     backup = f"{REPORTS_DAT}.{stamp}"
@@ -550,6 +607,22 @@ def maybe_rotate(conn):
 
     write_request("REPORTS.JOB")
     log.info("Rotace hotova, stara data v %s, REPORTS.JOB znovu spusten.", backup)
+
+    # Bookkeeping tiketu 1.5 - zamerne AZ TADY, po tom, co je rotace uz
+    # (vcetne opetovneho vyzbrojeni REPORTS.JOB) plne hotova. Selhani tady
+    # se jen zaloguje, nikdy nesmi rotaci samotnou shodit ani zpozdit dalsi
+    # sber dat.
+    try:
+        record_archive(conn, backup, ingested_line_count)
+    except Exception:
+        log.exception(
+            "Zapis archivniho zaznamu (checksum/metadata) pro %s selhal - "
+            "rotace samotna uz ale probehla v poradku, pokracuji.", backup,
+        )
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def write_heartbeat(conn):
